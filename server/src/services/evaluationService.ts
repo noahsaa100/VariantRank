@@ -75,7 +75,8 @@ function generateTopDrivers(url: string): string[] {
   return DRIVERS.filter((_, i) => seededRandom(base + i + 200, 0, 1) > 0.55).slice(0, 4);
 }
 
-function generateFeatures(url: string): Record<string, unknown> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function generateFeatures(url: string): Record<string, any> {
   const base = hashUrl(url);
   return {
     hasCTA:           seededRandom(base + 300, 0, 1) > 0.3,
