@@ -12,6 +12,8 @@ import { GOAL_LABELS, resolveGoalKey, type GoalKey } from '../config/goals';
 import {
   createFallbackFeatures,
   extractFeaturesFromHtml,
+  type CommitmentLevel,
+  type CtaAnalysis,
   type ExtractedFeatures,
 } from './htmlFeatureExtractor';
 import { fetchPageHtml } from './pageFetcher';
@@ -52,7 +54,33 @@ function getContentDepthScore(wordCount: number): number {
   return 0;
 }
 
-function deriveBehaviouralScores(features: ExtractedFeatures): BehaviouralScores {
+function getCommitmentBoost(level: CommitmentLevel): number {
+  if (level === 'medium') return 12;
+  if (level === 'high') return 9;
+  if (level === 'low') return 5;
+  return 0;
+}
+
+function getGoalSpecificCommitmentAdjustment(goalKey: GoalKey, level: CommitmentLevel): number {
+  if (goalKey === 'directPurchase') {
+    if (level === 'high') return 8;
+    if (level === 'medium') return 4;
+    if (level === 'low') return -4;
+  }
+
+  if (goalKey === 'contentEngagement') {
+    if (level === 'low') return 6;
+    if (level === 'medium') return 2;
+    if (level === 'high') return -5;
+  }
+
+  if (level === 'high') return -3;
+  if (level === 'medium') return 4;
+  if (level === 'low') return 2;
+  return 0;
+}
+
+function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey): BehaviouralScores {
   if (features.analysisError) {
     return {
       messageClarity: 8,
@@ -67,17 +95,31 @@ function deriveBehaviouralScores(features: ExtractedFeatures): BehaviouralScores
     };
   }
 
+  const cta = features.ctaAnalysis as CtaAnalysis;
+  const ctaDiversity = cta.actionCtaCount + cta.mixedCtaCount + cta.informationalCtaCount;
+  const riskCueCount = cta.riskReductionCues.length;
+  const effortCueCount = cta.effortCues.length;
+  const responsibilityCueCount = cta.responsibilityCues.length;
+  const primaryVerbPresent = Boolean(cta.primaryVerb);
+  const primaryType = cta.primaryCtaType;
+  const commitmentLevel = cta.primaryCommitmentLevel;
+
   const messageClarity = toScore(
     (features.titlePresent ? 20 : 0) +
     (features.metaDescriptionPresent ? 15 : 0) +
     (features.h1Count === 1 ? 25 : features.h1Count > 1 ? 15 : 0) +
     Math.min(features.headingCount, 6) * 6 +
-    (features.wordCount >= 120 ? 20 : features.wordCount >= 60 ? 10 : 0),
+    (features.wordCount >= 120 ? 20 : features.wordCount >= 60 ? 10 : 0) +
+    (primaryVerbPresent ? 8 : 0),
   );
 
   const valueCommunication = toScore(
-    (features.primaryCtaText ? 25 : 0) +
-    Math.min(features.ctaCount, 4) * 12 +
+    (features.primaryCtaText ? 18 : 0) +
+    Math.min(ctaDiversity, 4) * 9 +
+    (primaryVerbPresent ? 12 : 0) +
+    (primaryType === 'action' ? 12 : primaryType === 'mixed' ? 8 : primaryType === 'informational' ? 5 : 0) +
+    Math.min(riskCueCount, 3) * 8 +
+    Math.min(responsibilityCueCount, 2) * 4 +
     (features.wordCount >= 80 ? 15 : 0) +
     (features.testimonialKeywordsPresent ? 10 : 0) +
     (features.faqKeywordsPresent ? 8 : 0) +
@@ -85,8 +127,14 @@ function deriveBehaviouralScores(features: ExtractedFeatures): BehaviouralScores
   );
 
   const actionOrientation = toScore(
-    Math.min(features.ctaCount, 5) * 14 +
-    (features.primaryCtaText ? 15 : 0) +
+    Math.min(cta.actionCtaCount + cta.mixedCtaCount, 5) * 12 +
+    Math.min(cta.informationalCtaCount, 3) * 5 +
+    (features.primaryCtaText ? 12 : 0) +
+    (primaryType === 'action' ? 15 : primaryType === 'mixed' ? 12 : primaryType === 'informational' ? 6 : 0) +
+    getCommitmentBoost(commitmentLevel) +
+    getGoalSpecificCommitmentAdjustment(goalKey, commitmentLevel) +
+    Math.min(riskCueCount, 2) * 5 +
+    Math.min(responsibilityCueCount, 2) * 3 +
     (features.formPresent ? 20 : 10) +
     (features.formPresent
       ? features.formFieldCount <= 6
@@ -112,7 +160,9 @@ function deriveBehaviouralScores(features: ExtractedFeatures): BehaviouralScores
   const formEfficiency = toScore(
     formEfficiencyBase +
     (features.ctaCount > 0 ? 10 : 0) +
-    (features.navLinkCount > 0 ? 5 : 0),
+    (features.navLinkCount > 0 ? 5 : 0) +
+    (riskCueCount > 0 ? 5 : 0) +
+    (effortCueCount >= 3 ? -12 : effortCueCount === 2 ? -6 : effortCueCount === 1 ? -3 : 0),
   );
 
   const navigationOrientation = toScore(
@@ -128,7 +178,8 @@ function deriveBehaviouralScores(features: ExtractedFeatures): BehaviouralScores
     (features.faqKeywordsPresent ? 10 : 0) +
     (features.titlePresent ? 10 : 0) +
     (features.metaDescriptionPresent ? 10 : 0) +
-    (features.formPresent ? 5 : 0),
+    (features.formPresent ? 5 : 0) +
+    Math.min(riskCueCount, 3) * 4,
   );
 
   const supportConfidence = toScore(
@@ -221,18 +272,50 @@ function deriveRulePenalties(
   }
 
   const penalties: RulePenalty[] = [];
+  const cta = features.ctaAnalysis as CtaAnalysis;
+  const hasActionIntent = cta.actionCtaCount + cta.mixedCtaCount > 0;
+  const hasRiskReduction = cta.riskReductionCues.length > 0;
 
   if (!features.httpsPresent) penalties.push({ rule: 'Trust/Technical risk: Missing HTTPS', penalty: -10 });
   if (!features.titlePresent) penalties.push({ rule: 'Clarity risk: Missing page title', penalty: -6 });
   if (!features.metaDescriptionPresent) penalties.push({ rule: 'Clarity risk: Missing meta description', penalty: -4 });
   if (!features.viewportMetaPresent) penalties.push({ rule: 'UX/Technical risk: Missing viewport meta', penalty: -5 });
   if (features.ctaCount === 0) penalties.push({ rule: 'UX/Friction risk: No clear CTA detected', penalty: -9 });
+  if (features.ctaCount > 0 && !cta.primaryVerb) {
+    penalties.push({ rule: 'Clarity risk: Primary CTA lacks a clear action verb', penalty: -5 });
+  }
+  if (features.ctaCount > 0 && !hasActionIntent) {
+    penalties.push({ rule: 'UX risk: CTA set is mostly informational, not action-oriented', penalty: -7 });
+  }
   if (features.formPresent && features.formFieldCount > 12) {
     penalties.push({ rule: 'Friction risk: Form appears long/high-effort', penalty: -8 });
+  }
+  if (cta.effortCues.length >= 3) {
+    penalties.push({ rule: 'Friction risk: CTA phrasing suggests high user effort', penalty: -6 });
   }
   if (!features.contactInfoPresent) penalties.push({ rule: 'Trust risk: No visible contact info', penalty: -7 });
   if (!features.testimonialKeywordsPresent) penalties.push({ rule: 'Trust risk: No social-proof language', penalty: -5 });
   if (features.wordCount < 80) penalties.push({ rule: 'Clarity risk: Very low page copy', penalty: -7 });
+
+  if (
+    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
+    cta.primaryCommitmentLevel === 'high'
+  ) {
+    penalties.push({ rule: 'Goal-fit risk: CTA commitment is too high for early-stage conversion goal', penalty: -6 });
+  }
+  if (goalKey === 'directPurchase' && cta.primaryCommitmentLevel === 'low') {
+    penalties.push({ rule: 'Goal-fit risk: CTA commitment is too low for purchase intent', penalty: -6 });
+  }
+  if (goalKey === 'contentEngagement' && hasActionIntent && cta.primaryCommitmentLevel === 'high') {
+    penalties.push({ rule: 'Goal-fit risk: High-commitment CTA may suppress content engagement intent', penalty: -5 });
+  }
+  if (
+    (goalKey === 'trialSignup' || goalKey === 'directPurchase') &&
+    hasActionIntent &&
+    !hasRiskReduction
+  ) {
+    penalties.push({ rule: 'Trust/UX risk: Action CTA lacks risk-reduction cue (free, trial, demo, guarantee)', penalty: -5 });
+  }
 
   const multipliers = GOAL_WEIGHT_MATRICES[goalKey].conceptMultipliers;
   const priorityConcepts = [...ALL_CONCEPTS]
@@ -259,11 +342,13 @@ function buildConceptDriver(
   features: ExtractedFeatures,
 ): string {
   const category = DOMINANT_CATEGORY_BY_CONCEPT[concept];
+  const cta = features.ctaAnalysis as CtaAnalysis;
 
   switch (concept) {
     case 'actionOrientation':
       if (features.primaryCtaText) {
-        return `${category}: Strong action orientation via CTA "${features.primaryCtaText}" (${score.toFixed(0)})`;
+        const verb = cta.primaryVerb ? `verb "${cta.primaryVerb}"` : 'no explicit verb';
+        return `${category}: CTA "${features.primaryCtaText}" uses ${verb} (${cta.primaryCommitmentLevel} commitment, ${score.toFixed(0)})`;
       }
       return `${category}: Action orientation signal is strong (${score.toFixed(0)})`;
     case 'formEfficiency':
@@ -293,11 +378,24 @@ function deriveTopDrivers(
   const multipliers = GOAL_WEIGHT_MATRICES[goalKey].conceptMultipliers;
   const prioritizedConcept = [...ALL_CONCEPTS].sort((a, b) => multipliers[b] - multipliers[a])[0];
   const drivers: string[] = [];
+  const cta = features.ctaAnalysis as CtaAnalysis;
 
   if (conceptScores[prioritizedConcept] >= 60) {
     drivers.push(
       `Goal fit (${GOAL_LABELS[goalKey]}): ${CONCEPT_LABELS[prioritizedConcept]} is strong (${conceptScores[prioritizedConcept].toFixed(0)})`,
     );
+  }
+
+  if (cta.primaryVerb && features.primaryCtaText) {
+    drivers.push(
+      `CTA quality: "${features.primaryCtaText}" uses action verb "${cta.primaryVerb}" with ${cta.primaryCommitmentLevel} commitment`,
+    );
+  }
+  if (cta.riskReductionCues.length > 0) {
+    drivers.push(`CTA reassurance: risk-reduction cues detected (${cta.riskReductionCues.join(', ')})`);
+  }
+  if (cta.actionCtaCount + cta.mixedCtaCount >= 2) {
+    drivers.push(`CTA coverage: ${cta.actionCtaCount + cta.mixedCtaCount} action-oriented CTA options detected`);
   }
 
   const rankedConcepts = [...ALL_CONCEPTS].sort((a, b) => conceptScores[b] - conceptScores[a]);
@@ -324,7 +422,7 @@ async function analyzeVariant(url: string, index: number, goalKey: GoalKey): Pro
       ? extractFeaturesFromHtml(fetchResult.html, fetchResult.finalUrl)
       : createFallbackFeatures(fetchResult.finalUrl || url, fetchResult.error);
 
-    const baseConceptScores = deriveBehaviouralScores(features);
+    const baseConceptScores = deriveBehaviouralScores(features, goalKey);
     const goalAdjustedConceptScores = applyGoalMultipliers(baseConceptScores, goalKey);
     const categoryScores = deriveCategoryScores(goalAdjustedConceptScores);
 
@@ -340,7 +438,7 @@ async function analyzeVariant(url: string, index: number, goalKey: GoalKey): Pro
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unexpected analysis error';
     const features = createFallbackFeatures(url, message);
-    const baseConceptScores = deriveBehaviouralScores(features);
+    const baseConceptScores = deriveBehaviouralScores(features, goalKey);
     const goalAdjustedConceptScores = applyGoalMultipliers(baseConceptScores, goalKey);
     const categoryScores = deriveCategoryScores(goalAdjustedConceptScores);
 
