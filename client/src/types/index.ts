@@ -1,9 +1,10 @@
 export interface CategoryScores {
-  design: number;
-  performance: number;
-  copywriting: number;
-  trustSignals: number;
-  ux: number;
+  UX: number;
+  Trust: number;
+  Clarity: number;
+  Friction: number;
+  Technical: number;
+  [key: string]: number;
 }
 
 export interface RulePenalty {
@@ -11,15 +12,7 @@ export interface RulePenalty {
   penalty: number;
 }
 
-export interface Features {
-  hasCTA: boolean;
-  hasTestimonials: boolean;
-  hasVideo: boolean;
-  hasPricing: boolean;
-  hasFAQ: boolean;
-  mobileFriendly: boolean;
-  pageSpeedScore: number;
-}
+export type Features = Record<string, unknown>;
 
 export interface Variant {
   id: string;
