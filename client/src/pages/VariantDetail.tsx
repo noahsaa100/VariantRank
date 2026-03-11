@@ -1,8 +1,20 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { getEvaluation } from '../api/evaluations';
 import type { Evaluation, Variant } from '../types';
 import { ScoreBar } from '../components/ScoreBar';
+
+function formatFeatureValue(value: unknown): string {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (value === null || value === undefined) {
+    return '-';
+  }
+
+  return JSON.stringify(value);
+}
 
 export function VariantDetail() {
   const { id, variantId } = useParams<{ id: string; variantId: string }>();
@@ -16,57 +28,58 @@ export function VariantDetail() {
     getEvaluation(id)
       .then((ev: Evaluation) => {
         setEvaluation(ev);
-        const v = ev.variants.find((v: Variant) => v.id === variantId);
-        setVariant(v ?? null);
+        const matched = ev.variants.find((item: Variant) => item.id === variantId);
+        setVariant(matched ?? null);
       })
       .catch(() => setError('Failed to load.'))
       .finally(() => setLoading(false));
   }, [id, variantId]);
 
-  if (loading) return <div className="page"><p>Loading…</p></div>;
+  if (loading) return <div className="page"><p>Loading...</p></div>;
   if (error || !variant || !evaluation) return <div className="page"><p className="error">{error ?? 'Not found'}</p></div>;
 
-  const features = variant.features as unknown as Record<string, unknown>;
+  const features = variant.features as Record<string, unknown>;
 
   return (
     <div className="page">
-      <Link to={`/results/${evaluation.id}`} className="back-link">← Back to Results</Link>
-      <h1>Variant Detail</h1>
+      <Link to={`/results/${evaluation.id}`} className="back-link">Back to Results</Link>
+
+      <h2 className="page-title">Variant Detail</h2>
       <p className="meta">
         <a href={variant.url} target="_blank" rel="noopener noreferrer">{variant.url}</a>
-        {' · '}Rank #{variant.rank} · Score {variant.totalScore.toFixed(1)}
+        {' | '}Rank #{variant.rank} | Score {variant.totalScore.toFixed(1)}
       </p>
 
       <section className="detail-section">
-        <h2>Category Scores</h2>
-        {Object.entries(variant.categoryScores).map(([k, v]) => (
-          <ScoreBar key={k} label={k} score={v} />
+        <h3>Category Scores</h3>
+        {Object.entries(variant.categoryScores).map(([key, value]) => (
+          <ScoreBar key={key} label={key} score={value} />
         ))}
       </section>
 
       <section className="detail-section">
-        <h2>Top Drivers</h2>
+        <h3>Top Drivers</h3>
         <ul>
-          {variant.topDrivers.map((d) => <li key={d}>{d}</li>)}
+          {variant.topDrivers.map((driver) => <li key={driver}>{driver}</li>)}
         </ul>
       </section>
 
       {variant.rulePenalties.length > 0 && (
         <section className="detail-section">
-          <h2>Rule Penalties</h2>
+          <h3>Rule Penalties</h3>
           <ul>
-            {variant.rulePenalties.map((p) => (
-              <li key={p.rule}>{p.rule}: <strong>{p.penalty}</strong></li>
+            {variant.rulePenalties.map((penalty) => (
+              <li key={penalty.rule}>{penalty.rule}: <strong>{penalty.penalty}</strong></li>
             ))}
           </ul>
         </section>
       )}
 
       <section className="detail-section">
-        <h2>Features</h2>
+        <h3>Features</h3>
         <ul>
-          {Object.entries(features).map(([k, v]) => (
-            <li key={k}>{k}: <strong>{String(v)}</strong></li>
+          {Object.entries(features).map(([key, value]) => (
+            <li key={key}>{key}: <strong>{formatFeatureValue(value)}</strong></li>
           ))}
         </ul>
       </section>

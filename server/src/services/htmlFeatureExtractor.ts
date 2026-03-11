@@ -1,4 +1,5 @@
 import { load } from 'cheerio';
+import type { AiAssistMetadata } from '../types/aiAssist';
 
 export type CtaType = 'action' | 'informational' | 'mixed' | 'unknown';
 export type CommitmentLevel = 'low' | 'medium' | 'high' | 'unknown';
@@ -45,6 +46,7 @@ export interface ExtractedFeatures extends Record<string, unknown> {
   faqKeywordsPresent: boolean;
   contactInfoPresent: boolean;
   ctaAnalysis: CtaAnalysis;
+  aiAssist?: AiAssistMetadata;
   analysisError?: string;
 }
 

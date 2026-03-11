@@ -8,7 +8,9 @@ import {
   type TopLevelCategory,
 } from '../config/behaviouralScoring';
 import { GOAL_WEIGHT_MATRICES } from '../config/goalWeightMatrices';
-import { GOAL_LABELS, resolveGoalKey, type GoalKey } from '../config/goals';
+import { GOAL_LABELS, type GoalKey } from '../config/goals';
+import type { CtaClassificationAssist, GoalMappingAssist } from '../types/aiAssist';
+import { classifyPrimaryCtaWithAi } from './aiAssistService';
 import {
   createFallbackFeatures,
   extractFeaturesFromHtml,
@@ -17,6 +19,7 @@ import {
   type ExtractedFeatures,
 } from './htmlFeatureExtractor';
 import { fetchPageHtml } from './pageFetcher';
+import { resolveGoalWithAssist } from './goalAssistService';
 
 const prisma = new PrismaClient();
 
@@ -39,6 +42,20 @@ interface VariantComputation {
 }
 
 const ALL_CONCEPTS = Object.keys(CONCEPT_LABELS) as BehaviouralConcept[];
+
+function withAssistMetadata(
+  features: ExtractedFeatures,
+  goalAssist: GoalMappingAssist,
+  ctaAssist: CtaClassificationAssist | null,
+): ExtractedFeatures {
+  return {
+    ...features,
+    aiAssist: {
+      goalMapping: goalAssist,
+      ...(ctaAssist ? { ctaClassification: ctaAssist } : {}),
+    },
+  };
+}
 
 function toScore(value: number): number {
   return Math.max(0, Math.min(100, parseFloat(value.toFixed(1))));
@@ -379,6 +396,7 @@ function deriveTopDrivers(
   const prioritizedConcept = [...ALL_CONCEPTS].sort((a, b) => multipliers[b] - multipliers[a])[0];
   const drivers: string[] = [];
   const cta = features.ctaAnalysis as CtaAnalysis;
+  const aiCta = features.aiAssist?.ctaClassification;
 
   if (conceptScores[prioritizedConcept] >= 60) {
     drivers.push(
@@ -396,6 +414,11 @@ function deriveTopDrivers(
   }
   if (cta.actionCtaCount + cta.mixedCtaCount >= 2) {
     drivers.push(`CTA coverage: ${cta.actionCtaCount + cta.mixedCtaCount} action-oriented CTA options detected`);
+  }
+  if (aiCta) {
+    drivers.push(
+      `AI assist: CTA classified as ${aiCta.actionType} / ${aiCta.commitmentLevel} commitment (confidence ${Math.round(aiCta.confidence * 100)}%)`,
+    );
   }
 
   const rankedConcepts = [...ALL_CONCEPTS].sort((a, b) => conceptScores[b] - conceptScores[a]);
@@ -415,12 +438,21 @@ function deriveTopDrivers(
   return drivers.slice(0, 4);
 }
 
-async function analyzeVariant(url: string, index: number, goalKey: GoalKey): Promise<VariantComputation> {
+async function analyzeVariant(
+  url: string,
+  index: number,
+  goalKey: GoalKey,
+  goalAssist: GoalMappingAssist,
+): Promise<VariantComputation> {
   try {
     const fetchResult = await fetchPageHtml(url);
-    const features = fetchResult.ok
+    const extracted = fetchResult.ok
       ? extractFeaturesFromHtml(fetchResult.html, fetchResult.finalUrl)
       : createFallbackFeatures(fetchResult.finalUrl || url, fetchResult.error);
+    const aiCta = extracted.primaryCtaText
+      ? await classifyPrimaryCtaWithAi(extracted.primaryCtaText, goalKey)
+      : null;
+    const features = withAssistMetadata(extracted, goalAssist, aiCta);
 
     const baseConceptScores = deriveBehaviouralScores(features, goalKey);
     const goalAdjustedConceptScores = applyGoalMultipliers(baseConceptScores, goalKey);
@@ -437,7 +469,8 @@ async function analyzeVariant(url: string, index: number, goalKey: GoalKey): Pro
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unexpected analysis error';
-    const features = createFallbackFeatures(url, message);
+    const fallback = createFallbackFeatures(url, message);
+    const features = withAssistMetadata(fallback, goalAssist, null);
     const baseConceptScores = deriveBehaviouralScores(features, goalKey);
     const goalAdjustedConceptScores = applyGoalMultipliers(baseConceptScores, goalKey);
     const categoryScores = deriveCategoryScores(goalAdjustedConceptScores);
@@ -457,15 +490,17 @@ async function analyzeVariant(url: string, index: number, goalKey: GoalKey): Pro
 export interface CreateEvaluationInput {
   urls: string[];
   goal: string;
+  goalDescription?: string;
   anonymousSessionId?: string;
 }
 
 export async function createEvaluation(input: CreateEvaluationInput) {
-  const { urls, goal, anonymousSessionId } = input;
-  const goalKey = resolveGoalKey(goal);
+  const { urls, goal, goalDescription, anonymousSessionId } = input;
+  const { scoringGoalKey, goalAssist } = await resolveGoalWithAssist(goal, goalDescription);
+  const goalKey = scoringGoalKey;
   const start = Date.now();
 
-  const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey)));
+  const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey, goalAssist)));
 
   const ranked = [...variantData].sort((a, b) => b.totalScore - a.totalScore);
   const rankMap = new Map<number, number>(ranked.map((variant, rankIndex) => [variant.index, rankIndex + 1]));
@@ -525,4 +560,32 @@ export async function getEvaluation(id: string) {
   });
 
   return evaluation ?? null;
+}
+
+export async function deleteEvaluation(id: string): Promise<boolean> {
+  const existing = await prisma.evaluation.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+
+  if (!existing) {
+    return false;
+  }
+
+  await prisma.$transaction([
+    prisma.variant.deleteMany({ where: { evaluationId: id } }),
+    prisma.evaluation.delete({ where: { id } }),
+  ]);
+
+  return true;
+}
+
+export async function deleteAllEvaluations() {
+  const deletedVariants = await prisma.variant.deleteMany();
+  const deletedEvaluations = await prisma.evaluation.deleteMany();
+
+  return {
+    deletedEvaluations: deletedEvaluations.count,
+    deletedVariants: deletedVariants.count,
+  };
 }
