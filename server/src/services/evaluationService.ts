@@ -61,14 +61,42 @@ function toScore(value: number): number {
   return Math.max(0, Math.min(100, parseFloat(value.toFixed(1))));
 }
 
-function getContentDepthScore(wordCount: number): number {
-  if (wordCount >= 1200) return 100;
-  if (wordCount >= 600) return 85;
-  if (wordCount >= 250) return 70;
-  if (wordCount >= 120) return 55;
-  if (wordCount >= 60) return 40;
-  if (wordCount > 0) return 25;
-  return 0;
+function getContentDepthScore(wordCount: number, headingCount: number): number {
+  const baseScore =
+    wordCount >= 1200
+      ? 100
+      : wordCount >= 600
+        ? 85
+        : wordCount >= 250
+          ? 70
+          : wordCount >= 120
+            ? 55
+            : wordCount >= 60
+              ? 40
+              : wordCount > 0
+                ? 25
+                : 0;
+
+  // Long copy needs sufficient structure. Thin heading support reduces depth quality.
+  let structureAdjustment = 0;
+  if (wordCount >= 600 && headingCount < 3) {
+    structureAdjustment = -28;
+  } else if (wordCount >= 250 && headingCount < 2) {
+    structureAdjustment = -20;
+  } else if (wordCount >= 120 && headingCount === 0) {
+    structureAdjustment = -12;
+  }
+
+  // Shorter pages are not heavily penalized when they are well-structured.
+  if (wordCount < 250 && headingCount >= 3) {
+    structureAdjustment += 10;
+  } else if (wordCount < 120 && headingCount >= 2) {
+    structureAdjustment += 12;
+  } else if (wordCount < 60 && headingCount >= 1) {
+    structureAdjustment += 10;
+  }
+
+  return toScore(baseScore + structureAdjustment);
 }
 
 function getCommitmentBoost(level: CommitmentLevel): number {
@@ -120,6 +148,15 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   const primaryVerbPresent = Boolean(cta.primaryVerb);
   const primaryType = cta.primaryCtaType;
   const commitmentLevel = cta.primaryCommitmentLevel;
+  const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
+
+  // Lower density (more headings per word volume) is easier to scan.
+  const contentDensityAdjustment =
+    contentDensity <= 30
+      ? 5
+      : contentDensity <= 65
+        ? 0
+        : -8;
 
   // Synthesises verb presence, CTA type, and commitment into a single 0–100 clarity signal.
   // Scaled by 0.6 in actionOrientation (range 12–54), replacing the old fragmented
@@ -136,9 +173,10 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     (features.titlePresent ? 20 : 0) +
     (features.metaDescriptionPresent ? 15 : 0) +
     (features.h1Count === 1 ? 25 : features.h1Count > 1 ? 15 : 0) +
-    Math.min(features.headingCount, 6) * 6 +
+    Math.min(features.headingCount, 6) * 7 +
     (features.wordCount >= 120 ? 20 : features.wordCount >= 60 ? 10 : 0) +
-    (primaryVerbPresent ? 8 : 0),
+    (primaryVerbPresent ? 8 : 0) +
+    contentDensityAdjustment,
   );
 
   const valueCommunication = toScore(
@@ -183,17 +221,17 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
       : 10),
   );
 
+  // No-form pages get a neutral baseline: absence of a form is not inherently efficient.
+  // Field-count tiers reflect progressive friction as forms grow longer.
   const formEfficiencyBase = !features.formPresent
-    ? 70
-    : features.formFieldCount <= 4
-      ? 95
-      : features.formFieldCount <= 8
-        ? 80
-        : features.formFieldCount <= 12
-          ? 60
-          : features.formFieldCount <= 18
-            ? 40
-            : 20;
+    ? 55
+    : features.formFieldCount <= 2
+      ? 90
+      : features.formFieldCount <= 5
+        ? 72
+        : features.formFieldCount <= 9
+          ? 52
+          : 30; // 10+ fields → very low efficiency
 
   const formEfficiency = toScore(
     formEfficiencyBase +
@@ -241,9 +279,9 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   );
 
   const contentDepth = toScore(
-    getContentDepthScore(features.wordCount) +
-    (features.headingCount >= 4 ? 10 : features.headingCount >= 2 ? 5 : 0) +
-    (features.h1Count === 1 ? 5 : 0),
+    getContentDepthScore(features.wordCount, features.headingCount) +
+    (features.h1Count === 1 ? 5 : 0) +
+    contentDensityAdjustment,
   );
 
   return {
@@ -313,6 +351,7 @@ function deriveRulePenalties(
   const cta = features.ctaAnalysis as CtaAnalysis;
   const hasActionIntent = cta.actionCtaCount + cta.mixedCtaCount > 0;
   const hasRiskReduction = cta.riskReductionCues.length > 0;
+  const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
 
   // Placed first to guarantee it survives the slice(0, 8) truncation.
   if (features.ctaCount === 0) penalties.push({ rule: 'UX/Friction risk: No clear CTA detected', penalty: -18 });
@@ -347,8 +386,14 @@ function deriveRulePenalties(
   if (features.ctaCount > 4) {
     penalties.push({ rule: 'UX risk: High CTA count may cause choice overload', penalty: -4 });
   }
-  if (features.formPresent && features.formFieldCount > 12) {
-    penalties.push({ rule: 'Friction risk: Form appears long/high-effort', penalty: -8 });
+  if (features.formPresent) {
+    if (features.formFieldCount >= 13) {
+      penalties.push({ rule: 'Friction risk: Form is very long (13+ fields)', penalty: -12 });
+    } else if (features.formFieldCount >= 10) {
+      penalties.push({ rule: 'Friction risk: Form is long (10–12 fields)', penalty: -8 });
+    } else if (features.formFieldCount >= 6) {
+      penalties.push({ rule: 'Friction risk: Form has moderate friction (6–9 fields)', penalty: -5 });
+    }
   }
   if (cta.effortCues.length >= 3) {
     penalties.push({ rule: 'Friction risk: CTA phrasing suggests high user effort', penalty: -6 });
@@ -356,12 +401,25 @@ function deriveRulePenalties(
   if (!features.contactInfoPresent) penalties.push({ rule: 'Trust risk: No visible contact info', penalty: -7 });
   if (!features.testimonialKeywordsPresent) penalties.push({ rule: 'Trust risk: No social-proof language', penalty: -5 });
   if (features.wordCount < 80) penalties.push({ rule: 'Clarity risk: Very low page copy', penalty: -7 });
+  if (features.wordCount >= 120) {
+    if (contentDensity >= 150) {
+      penalties.push({ rule: 'Clarity risk: Content is very dense with limited segmentation', penalty: -9 });
+    } else if (contentDensity >= 90) {
+      penalties.push({ rule: 'Clarity risk: Content density is high and may reduce scannability', penalty: -6 });
+    }
+  }
 
   if (
     (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
     cta.primaryCommitmentLevel === 'high'
   ) {
     penalties.push({ rule: 'Goal-fit risk: CTA commitment is too high for early-stage conversion goal', penalty: -6 });
+  }
+  if (
+    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
+    !features.formPresent
+  ) {
+    penalties.push({ rule: 'Goal-fit risk: No form detected for a conversion-dependent goal', penalty: -9 });
   }
   if (goalKey === 'directPurchase' && cta.primaryCommitmentLevel === 'low') {
     penalties.push({ rule: 'Goal-fit risk: CTA commitment is too low for purchase intent', penalty: -6 });
