@@ -121,6 +121,17 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   const primaryType = cta.primaryCtaType;
   const commitmentLevel = cta.primaryCommitmentLevel;
 
+  // Synthesises verb presence, CTA type, and commitment into a single 0–100 clarity signal.
+  // Scaled by 0.6 in actionOrientation (range 12–54), replacing the old fragmented
+  // primaryCtaText-presence + primaryType-branch contributions.
+  const ctaClarityScore: number = (() => {
+    if (!primaryVerbPresent) return 20;                  // no verb → very low clarity
+    if (primaryType === 'action') return 90;             // action verb + action type → high clarity
+    if (primaryType === 'mixed') return 60;              // verb but mixed intent → medium clarity
+    if (primaryType === 'informational') return 30;      // verb present but informational → low clarity
+    return 20;                                           // unknown type → very low clarity
+  })();
+
   const messageClarity = toScore(
     (features.titlePresent ? 20 : 0) +
     (features.metaDescriptionPresent ? 15 : 0) +
@@ -143,11 +154,21 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     (features.formPresent ? 8 : 0),
   );
 
+  // Ordered by severity; short-circuits so only the most impactful adjustment fires per variant.
+  // Keeps actionOrientation low when there is no usable action signal, and high when intent is clear.
+  const ctaSignalAdjustment: number = (() => {
+    if (features.ctaCount === 0) return -20;                                          // no CTA → strong suppression
+    if (!primaryVerbPresent) return -10;                                              // CTA present but intent unreadable
+    if (primaryType === 'informational') return -8;                                   // explicitly non-conversion type
+    if (cta.mixedCtaCount > 0 && cta.actionCtaCount === 0) return -5;               // only mixed CTAs, no clear action
+    return 0;                                                                         // clear action CTA — no deduction
+  })();
+
   const actionOrientation = toScore(
     Math.min(cta.actionCtaCount + cta.mixedCtaCount, 5) * 12 +
     Math.min(cta.informationalCtaCount, 3) * 5 +
-    (features.primaryCtaText ? 12 : 0) +
-    (primaryType === 'action' ? 15 : primaryType === 'mixed' ? 12 : primaryType === 'informational' ? 6 : 0) +
+    Math.round(ctaClarityScore * 0.6) +
+    ctaSignalAdjustment +
     getCommitmentBoost(commitmentLevel) +
     getGoalSpecificCommitmentAdjustment(goalKey, commitmentLevel) +
     Math.min(riskCueCount, 2) * 5 +
@@ -293,16 +314,38 @@ function deriveRulePenalties(
   const hasActionIntent = cta.actionCtaCount + cta.mixedCtaCount > 0;
   const hasRiskReduction = cta.riskReductionCues.length > 0;
 
+  // Placed first to guarantee it survives the slice(0, 8) truncation.
+  if (features.ctaCount === 0) penalties.push({ rule: 'UX/Friction risk: No clear CTA detected', penalty: -18 });
+
   if (!features.httpsPresent) penalties.push({ rule: 'Trust/Technical risk: Missing HTTPS', penalty: -10 });
   if (!features.titlePresent) penalties.push({ rule: 'Clarity risk: Missing page title', penalty: -6 });
   if (!features.metaDescriptionPresent) penalties.push({ rule: 'Clarity risk: Missing meta description', penalty: -4 });
   if (!features.viewportMetaPresent) penalties.push({ rule: 'UX/Technical risk: Missing viewport meta', penalty: -5 });
-  if (features.ctaCount === 0) penalties.push({ rule: 'UX/Friction risk: No clear CTA detected', penalty: -9 });
   if (features.ctaCount > 0 && !cta.primaryVerb) {
     penalties.push({ rule: 'Clarity risk: Primary CTA lacks a clear action verb', penalty: -5 });
   }
   if (features.ctaCount > 0 && !hasActionIntent) {
     penalties.push({ rule: 'UX risk: CTA set is mostly informational, not action-oriented', penalty: -7 });
+  }
+
+  // CTA ambiguity group — only fires when CTAs are present to avoid overlap with the no-CTA penalty.
+  // if/else-if ensures exactly one tier fires per evaluation, preventing internal double-counting.
+  if (features.ctaCount > 0) {
+    const isInformational = cta.primaryCtaType === 'informational';
+    const verbMissing = !cta.primaryVerb;
+    const hasMixed = cta.mixedCtaCount > 0;
+
+    if (isInformational || verbMissing) {
+      // High ambiguity: primary CTA type points away from conversion, or intent cannot be inferred from verb
+      penalties.push({ rule: 'Clarity/UX risk: CTA intent is ambiguous or non-action-oriented', penalty: -12 });
+    } else if (hasMixed) {
+      // Moderate ambiguity: mixed CTA signals present alongside action CTAs, may dilute focus
+      penalties.push({ rule: 'UX risk: Mixed CTA signals may dilute primary conversion intent', penalty: -6 });
+    }
+  }
+
+  if (features.ctaCount > 4) {
+    penalties.push({ rule: 'UX risk: High CTA count may cause choice overload', penalty: -4 });
   }
   if (features.formPresent && features.formFieldCount > 12) {
     penalties.push({ rule: 'Friction risk: Form appears long/high-effort', penalty: -8 });
