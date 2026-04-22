@@ -354,7 +354,12 @@ function deriveRulePenalties(
   const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
 
   // Placed first to guarantee it survives the slice(0, 8) truncation.
-  if (features.ctaCount === 0) penalties.push({ rule: 'UX/Friction risk: No clear CTA detected', penalty: -18 });
+  if (features.ctaCount === 0) {
+    penalties.push({
+      rule: 'UX/Friction risk: No clear CTA detected',
+      penalty: goalKey === 'contentEngagement' ? -10 : -18,
+    });
+  }
 
   if (!features.httpsPresent) penalties.push({ rule: 'Trust/Technical risk: Missing HTTPS', penalty: -10 });
   if (!features.titlePresent) penalties.push({ rule: 'Clarity risk: Missing page title', penalty: -6 });
@@ -364,7 +369,10 @@ function deriveRulePenalties(
     penalties.push({ rule: 'Clarity risk: Primary CTA lacks a clear action verb', penalty: -5 });
   }
   if (features.ctaCount > 0 && !hasActionIntent) {
-    penalties.push({ rule: 'UX risk: CTA set is mostly informational, not action-oriented', penalty: -7 });
+    penalties.push({
+      rule: 'UX risk: CTA set is mostly informational, not action-oriented',
+      penalty: goalKey === 'contentEngagement' ? -3 : -7,
+    });
   }
 
   // CTA ambiguity group — only fires when CTAs are present to avoid overlap with the no-CTA penalty.
@@ -376,10 +384,16 @@ function deriveRulePenalties(
 
     if (isInformational || verbMissing) {
       // High ambiguity: primary CTA type points away from conversion, or intent cannot be inferred from verb
-      penalties.push({ rule: 'Clarity/UX risk: CTA intent is ambiguous or non-action-oriented', penalty: -12 });
+      penalties.push({
+        rule: 'Clarity/UX risk: CTA intent is ambiguous or non-action-oriented',
+        penalty: goalKey === 'contentEngagement' ? -7 : -12,
+      });
     } else if (hasMixed) {
       // Moderate ambiguity: mixed CTA signals present alongside action CTAs, may dilute focus
-      penalties.push({ rule: 'UX risk: Mixed CTA signals may dilute primary conversion intent', penalty: -6 });
+      penalties.push({
+        rule: 'UX risk: Mixed CTA signals may dilute primary conversion intent',
+        penalty: goalKey === 'contentEngagement' ? -3 : -6,
+      });
     }
   }
 
@@ -413,7 +427,11 @@ function deriveRulePenalties(
     (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
     cta.primaryCommitmentLevel === 'high'
   ) {
-    penalties.push({ rule: 'Goal-fit risk: CTA commitment is too high for early-stage conversion goal', penalty: -6 });
+    const weakCta = !cta.primaryVerb || cta.primaryCtaType === 'informational';
+    penalties.push({
+      rule: 'Goal-fit risk: CTA commitment is too high for early-stage conversion goal',
+      penalty: weakCta ? -8 : -6,
+    });
   }
   if (
     (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
@@ -428,11 +446,14 @@ function deriveRulePenalties(
     penalties.push({ rule: 'Goal-fit risk: High-commitment CTA may suppress content engagement intent', penalty: -5 });
   }
   if (
-    (goalKey === 'trialSignup' || goalKey === 'directPurchase') &&
+    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation' || goalKey === 'directPurchase') &&
     hasActionIntent &&
     !hasRiskReduction
   ) {
-    penalties.push({ rule: 'Trust/UX risk: Action CTA lacks risk-reduction cue (free, trial, demo, guarantee)', penalty: -5 });
+    penalties.push({
+      rule: 'Trust/UX risk: Action CTA lacks risk-reduction cue (free, trial, demo, guarantee)',
+      penalty: -6,
+    });
   }
 
   const multipliers = GOAL_WEIGHT_MATRICES[goalKey].conceptMultipliers;
