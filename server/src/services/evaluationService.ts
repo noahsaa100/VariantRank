@@ -48,6 +48,7 @@ function withAssistMetadata(
   goalAssist: GoalMappingAssist,
   ctaAssist: CtaClassificationAssist | null,
 ): ExtractedFeatures {
+  // Preserve how the page was interpreted so stored results remain auditable.
   return {
     ...features,
     aiAssist: {
@@ -61,14 +62,42 @@ function toScore(value: number): number {
   return Math.max(0, Math.min(100, parseFloat(value.toFixed(1))));
 }
 
-function getContentDepthScore(wordCount: number): number {
-  if (wordCount >= 1200) return 100;
-  if (wordCount >= 600) return 85;
-  if (wordCount >= 250) return 70;
-  if (wordCount >= 120) return 55;
-  if (wordCount >= 60) return 40;
-  if (wordCount > 0) return 25;
-  return 0;
+function getContentDepthScore(wordCount: number, headingCount: number): number {
+  const baseScore =
+    wordCount >= 1200
+      ? 100
+      : wordCount >= 600
+        ? 85
+        : wordCount >= 250
+          ? 70
+          : wordCount >= 120
+            ? 55
+            : wordCount >= 60
+              ? 40
+              : wordCount > 0
+                ? 25
+                : 0;
+
+  // Long copy needs sufficient structure. Thin heading support reduces depth quality.
+  let structureAdjustment = 0;
+  if (wordCount >= 600 && headingCount < 3) {
+    structureAdjustment = -28;
+  } else if (wordCount >= 250 && headingCount < 2) {
+    structureAdjustment = -20;
+  } else if (wordCount >= 120 && headingCount === 0) {
+    structureAdjustment = -12;
+  }
+
+  // Shorter pages are not heavily penalized when they are well-structured.
+  if (wordCount < 250 && headingCount >= 3) {
+    structureAdjustment += 10;
+  } else if (wordCount < 120 && headingCount >= 2) {
+    structureAdjustment += 12;
+  } else if (wordCount < 60 && headingCount >= 1) {
+    structureAdjustment += 10;
+  }
+
+  return toScore(baseScore + structureAdjustment);
 }
 
 function getCommitmentBoost(level: CommitmentLevel): number {
@@ -79,6 +108,7 @@ function getCommitmentBoost(level: CommitmentLevel): number {
 }
 
 function getGoalSpecificCommitmentAdjustment(goalKey: GoalKey, level: CommitmentLevel): number {
+  // Commitment is desirable or risky depending on the stage implied by the goal.
   if (goalKey === 'directPurchase') {
     if (level === 'high') return 8;
     if (level === 'medium') return 4;
@@ -99,6 +129,7 @@ function getGoalSpecificCommitmentAdjustment(goalKey: GoalKey, level: Commitment
 
 function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey): BehaviouralScores {
   if (features.analysisError) {
+    // Keep fallback analyses scoreable without fabricating strong behavioural evidence.
     return {
       messageClarity: 8,
       valueCommunication: 8,
@@ -120,14 +151,36 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   const primaryVerbPresent = Boolean(cta.primaryVerb);
   const primaryType = cta.primaryCtaType;
   const commitmentLevel = cta.primaryCommitmentLevel;
+  const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
+
+  // More headings per unit of copy usually means faster scanning.
+  const contentDensityAdjustment =
+    contentDensity <= 30
+      ? 5
+      : contentDensity <= 65
+        ? 0
+        : -8;
+
+  // Synthesises verb presence, CTA type, and commitment into a single 0–100 clarity signal.
+  // Scaled by 0.6 in actionOrientation (range 12–54), replacing the old fragmented
+  // primaryCtaText-presence + primaryType-branch contributions.
+  // Collapse CTA wording quality into one signal before goal weighting is applied.
+  const ctaClarityScore: number = (() => {
+    if (!primaryVerbPresent) return 20;                  // no verb → very low clarity
+    if (primaryType === 'action') return 90;             // action verb + action type → high clarity
+    if (primaryType === 'mixed') return 60;              // verb but mixed intent → medium clarity
+    if (primaryType === 'informational') return 30;      // verb present but informational → low clarity
+    return 20;                                           // unknown type → very low clarity
+  })();
 
   const messageClarity = toScore(
     (features.titlePresent ? 20 : 0) +
     (features.metaDescriptionPresent ? 15 : 0) +
     (features.h1Count === 1 ? 25 : features.h1Count > 1 ? 15 : 0) +
-    Math.min(features.headingCount, 6) * 6 +
+    Math.min(features.headingCount, 6) * 7 +
     (features.wordCount >= 120 ? 20 : features.wordCount >= 60 ? 10 : 0) +
-    (primaryVerbPresent ? 8 : 0),
+    (primaryVerbPresent ? 8 : 0) +
+    contentDensityAdjustment,
   );
 
   const valueCommunication = toScore(
@@ -143,11 +196,22 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     (features.formPresent ? 8 : 0),
   );
 
+  // Ordered by severity; short-circuits so only the most impactful adjustment fires per variant.
+  // Keeps actionOrientation low when there is no usable action signal, and high when intent is clear.
+  // Apply only the strongest CTA-intent deduction to avoid stacking near-duplicate penalties.
+  const ctaSignalAdjustment: number = (() => {
+    if (features.ctaCount === 0) return -20;                                          // no CTA → strong suppression
+    if (!primaryVerbPresent) return -10;                                              // CTA present but intent unreadable
+    if (primaryType === 'informational') return -8;                                   // explicitly non-conversion type
+    if (cta.mixedCtaCount > 0 && cta.actionCtaCount === 0) return -5;               // only mixed CTAs, no clear action
+    return 0;                                                                         // clear action CTA — no deduction
+  })();
+
   const actionOrientation = toScore(
     Math.min(cta.actionCtaCount + cta.mixedCtaCount, 5) * 12 +
     Math.min(cta.informationalCtaCount, 3) * 5 +
-    (features.primaryCtaText ? 12 : 0) +
-    (primaryType === 'action' ? 15 : primaryType === 'mixed' ? 12 : primaryType === 'informational' ? 6 : 0) +
+    Math.round(ctaClarityScore * 0.6) +
+    ctaSignalAdjustment +
     getCommitmentBoost(commitmentLevel) +
     getGoalSpecificCommitmentAdjustment(goalKey, commitmentLevel) +
     Math.min(riskCueCount, 2) * 5 +
@@ -162,17 +226,18 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
       : 10),
   );
 
+  // No-form pages get a neutral baseline: absence of a form is not inherently efficient.
+  // Field-count tiers reflect progressive friction as forms grow longer.
+  // Approximate interaction effort from form length rather than treating every form equally.
   const formEfficiencyBase = !features.formPresent
-    ? 70
-    : features.formFieldCount <= 4
-      ? 95
-      : features.formFieldCount <= 8
-        ? 80
-        : features.formFieldCount <= 12
-          ? 60
-          : features.formFieldCount <= 18
-            ? 40
-            : 20;
+    ? 55
+    : features.formFieldCount <= 2
+      ? 90
+      : features.formFieldCount <= 5
+        ? 72
+        : features.formFieldCount <= 9
+          ? 52
+          : 30; // 10+ fields → very low efficiency
 
   const formEfficiency = toScore(
     formEfficiencyBase +
@@ -220,9 +285,9 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   );
 
   const contentDepth = toScore(
-    getContentDepthScore(features.wordCount) +
-    (features.headingCount >= 4 ? 10 : features.headingCount >= 2 ? 5 : 0) +
-    (features.h1Count === 1 ? 5 : 0),
+    getContentDepthScore(features.wordCount, features.headingCount) +
+    (features.h1Count === 1 ? 5 : 0) +
+    contentDensityAdjustment,
   );
 
   return {
@@ -241,6 +306,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
 function applyGoalMultipliers(baseScores: BehaviouralScores, goalKey: GoalKey): BehaviouralScores {
   const multipliers = GOAL_WEIGHT_MATRICES[goalKey].conceptMultipliers;
 
+  // Reweight the same evidence differently for each evaluation goal.
   return ALL_CONCEPTS.reduce((acc, concept) => {
     acc[concept] = toScore(baseScores[concept] * multipliers[concept]);
     return acc;
@@ -252,6 +318,7 @@ function deriveCategoryScores(conceptScores: BehaviouralScores): CategoryScores 
     const map = CATEGORY_CONCEPT_MAP[category];
     let total = 0;
 
+    // Category scores are weighted blends of the lower-level behavioural concepts.
     for (const concept of ALL_CONCEPTS) {
       const weight = map[concept] ?? 0;
       if (weight > 0) {
@@ -280,6 +347,7 @@ function deriveRulePenalties(
   goalKey: GoalKey,
 ): RulePenalty[] {
   if (features.analysisError) {
+    // Failed fetches still return a deterministic result with an explicit technical penalty.
     return [
       {
         rule: `Technical fallback: Page fetch failed (${features.analysisError})`,
@@ -292,20 +360,64 @@ function deriveRulePenalties(
   const cta = features.ctaAnalysis as CtaAnalysis;
   const hasActionIntent = cta.actionCtaCount + cta.mixedCtaCount > 0;
   const hasRiskReduction = cta.riskReductionCues.length > 0;
+  const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
+
+  // Keep the absence of a CTA visible even when later rules also fire.
+  if (features.ctaCount === 0) {
+    penalties.push({
+      rule: 'UX/Friction risk: No clear CTA detected',
+      penalty: goalKey === 'contentEngagement' ? -10 : -18,
+    });
+  }
 
   if (!features.httpsPresent) penalties.push({ rule: 'Trust/Technical risk: Missing HTTPS', penalty: -10 });
   if (!features.titlePresent) penalties.push({ rule: 'Clarity risk: Missing page title', penalty: -6 });
   if (!features.metaDescriptionPresent) penalties.push({ rule: 'Clarity risk: Missing meta description', penalty: -4 });
   if (!features.viewportMetaPresent) penalties.push({ rule: 'UX/Technical risk: Missing viewport meta', penalty: -5 });
-  if (features.ctaCount === 0) penalties.push({ rule: 'UX/Friction risk: No clear CTA detected', penalty: -9 });
   if (features.ctaCount > 0 && !cta.primaryVerb) {
     penalties.push({ rule: 'Clarity risk: Primary CTA lacks a clear action verb', penalty: -5 });
   }
   if (features.ctaCount > 0 && !hasActionIntent) {
-    penalties.push({ rule: 'UX risk: CTA set is mostly informational, not action-oriented', penalty: -7 });
+    penalties.push({
+      rule: 'UX risk: CTA set is mostly informational, not action-oriented',
+      penalty: goalKey === 'contentEngagement' ? -3 : -7,
+    });
   }
-  if (features.formPresent && features.formFieldCount > 12) {
-    penalties.push({ rule: 'Friction risk: Form appears long/high-effort', penalty: -8 });
+
+  // CTA ambiguity group — only fires when CTAs are present to avoid overlap with the no-CTA penalty.
+  // if/else-if ensures exactly one tier fires per evaluation, preventing internal double-counting.
+  // Isolate CTA ambiguity into one tier so the same weakness is not double-counted.
+  if (features.ctaCount > 0) {
+    const isInformational = cta.primaryCtaType === 'informational';
+    const verbMissing = !cta.primaryVerb;
+    const hasMixed = cta.mixedCtaCount > 0;
+
+    if (isInformational || verbMissing) {
+      // High ambiguity: primary CTA type points away from conversion, or intent cannot be inferred from verb
+      penalties.push({
+        rule: 'Clarity/UX risk: CTA intent is ambiguous or non-action-oriented',
+        penalty: goalKey === 'contentEngagement' ? -7 : -12,
+      });
+    } else if (hasMixed) {
+      // Moderate ambiguity: mixed CTA signals present alongside action CTAs, may dilute focus
+      penalties.push({
+        rule: 'UX risk: Mixed CTA signals may dilute primary conversion intent',
+        penalty: goalKey === 'contentEngagement' ? -3 : -6,
+      });
+    }
+  }
+
+  if (features.ctaCount > 4) {
+    penalties.push({ rule: 'UX risk: High CTA count may cause choice overload', penalty: -4 });
+  }
+  if (features.formPresent) {
+    if (features.formFieldCount >= 13) {
+      penalties.push({ rule: 'Friction risk: Form is very long (13+ fields)', penalty: -12 });
+    } else if (features.formFieldCount >= 10) {
+      penalties.push({ rule: 'Friction risk: Form is long (10–12 fields)', penalty: -8 });
+    } else if (features.formFieldCount >= 6) {
+      penalties.push({ rule: 'Friction risk: Form has moderate friction (6–9 fields)', penalty: -5 });
+    }
   }
   if (cta.effortCues.length >= 3) {
     penalties.push({ rule: 'Friction risk: CTA phrasing suggests high user effort', penalty: -6 });
@@ -313,12 +425,29 @@ function deriveRulePenalties(
   if (!features.contactInfoPresent) penalties.push({ rule: 'Trust risk: No visible contact info', penalty: -7 });
   if (!features.testimonialKeywordsPresent) penalties.push({ rule: 'Trust risk: No social-proof language', penalty: -5 });
   if (features.wordCount < 80) penalties.push({ rule: 'Clarity risk: Very low page copy', penalty: -7 });
+  if (features.wordCount >= 120) {
+    if (contentDensity >= 150) {
+      penalties.push({ rule: 'Clarity risk: Content is very dense with limited segmentation', penalty: -9 });
+    } else if (contentDensity >= 90) {
+      penalties.push({ rule: 'Clarity risk: Content density is high and may reduce scannability', penalty: -6 });
+    }
+  }
 
   if (
     (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
     cta.primaryCommitmentLevel === 'high'
   ) {
-    penalties.push({ rule: 'Goal-fit risk: CTA commitment is too high for early-stage conversion goal', penalty: -6 });
+    const weakCta = !cta.primaryVerb || cta.primaryCtaType === 'informational';
+    penalties.push({
+      rule: 'Goal-fit risk: CTA commitment is too high for early-stage conversion goal',
+      penalty: weakCta ? -8 : -6,
+    });
+  }
+  if (
+    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
+    !features.formPresent
+  ) {
+    penalties.push({ rule: 'Goal-fit risk: No form detected for a conversion-dependent goal', penalty: -9 });
   }
   if (goalKey === 'directPurchase' && cta.primaryCommitmentLevel === 'low') {
     penalties.push({ rule: 'Goal-fit risk: CTA commitment is too low for purchase intent', penalty: -6 });
@@ -327,11 +456,14 @@ function deriveRulePenalties(
     penalties.push({ rule: 'Goal-fit risk: High-commitment CTA may suppress content engagement intent', penalty: -5 });
   }
   if (
-    (goalKey === 'trialSignup' || goalKey === 'directPurchase') &&
+    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation' || goalKey === 'directPurchase') &&
     hasActionIntent &&
     !hasRiskReduction
   ) {
-    penalties.push({ rule: 'Trust/UX risk: Action CTA lacks risk-reduction cue (free, trial, demo, guarantee)', penalty: -5 });
+    penalties.push({
+      rule: 'Trust/UX risk: Action CTA lacks risk-reduction cue (free, trial, demo, guarantee)',
+      penalty: -6,
+    });
   }
 
   const multipliers = GOAL_WEIGHT_MATRICES[goalKey].conceptMultipliers;
@@ -340,6 +472,7 @@ function deriveRulePenalties(
     .filter((concept) => multipliers[concept] > 1.1)
     .slice(0, 3);
 
+  // Escalate weak concepts only when that concept is strategically important for the goal.
   for (const concept of priorityConcepts) {
     const score = conceptScores[concept];
     if (score >= 50) continue;
@@ -445,6 +578,7 @@ async function analyzeVariant(
   goalAssist: GoalMappingAssist,
 ): Promise<VariantComputation> {
   try {
+    // Pipeline: fetch -> extract -> optional AI CTA assist -> score -> rankable result.
     const fetchResult = await fetchPageHtml(url);
     const extracted = fetchResult.ok
       ? extractFeaturesFromHtml(fetchResult.html, fetchResult.finalUrl)
@@ -468,6 +602,7 @@ async function analyzeVariant(
       features,
     };
   } catch (error) {
+    // Guard the whole pipeline so one analysis failure does not abort the batch.
     const message = error instanceof Error ? error.message : 'Unexpected analysis error';
     const fallback = createFallbackFeatures(url, message);
     const features = withAssistMetadata(fallback, goalAssist, null);
@@ -502,6 +637,7 @@ export async function createEvaluation(input: CreateEvaluationInput) {
 
   const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey, goalAssist)));
 
+  // Rank after all variants are scored so persistence does not depend on request order.
   const ranked = [...variantData].sort((a, b) => b.totalScore - a.totalScore);
   const rankMap = new Map<number, number>(ranked.map((variant, rankIndex) => [variant.index, rankIndex + 1]));
 
