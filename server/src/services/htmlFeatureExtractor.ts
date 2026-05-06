@@ -237,6 +237,7 @@ function detectPrimaryVerb(text: string): string | null {
 
 function getCtaType(text: string): CtaType {
   const lower = text.toLowerCase();
+  // Blend explicit CTA phrases with verb heuristics so short button copy still classifies well.
   const hasActionSignal =
     ACTION_VERBS.some((verb) => lower.split(/\s+/).includes(verb)) ||
     CTA_KEYWORDS.some((keyword) => lower.includes(keyword)) ||
@@ -293,6 +294,7 @@ function isLikelyCtaText(text: string, isStrongControl: boolean): boolean {
     ACTION_VERBS.some((verb) => lower.split(/\s+/).includes(verb)) ||
     INFORMATIONAL_VERBS.some((verb) => lower.split(/\s+/).includes(verb));
 
+  // Buttons and submit inputs are allowed a little more latitude than plain links.
   if (isStrongControl) return wordCount <= 8 || hasKeywordSignal;
   return hasKeywordSignal;
 }
@@ -327,6 +329,7 @@ function buildCtaAnalysis($: ReturnType<typeof load>): CtaAnalysis {
   }
 
   const details = ctaTexts.map((text) => analyzeCtaText(text));
+  // Prefer the first action-capable CTA as the primary signal used by downstream scoring.
   const primaryDetail =
     details.find((detail) => detail.ctaType === 'action' || detail.ctaType === 'mixed') ??
     details[0];
@@ -360,6 +363,7 @@ function buildCtaAnalysis($: ReturnType<typeof load>): CtaAnalysis {
 }
 
 export function createFallbackFeatures(url: string, error: string): ExtractedFeatures {
+  // Return a complete feature object so scoring can continue after fetch/extraction failures.
   return {
     httpsPresent: /^https:\/\//i.test(url),
     titlePresent: false,
@@ -396,6 +400,7 @@ export function createFallbackFeatures(url: string, error: string): ExtractedFea
 
 export function extractFeaturesFromHtml(html: string, pageUrl: string): ExtractedFeatures {
   const $ = load(html);
+  // Remove non-visible nodes so text-based heuristics reflect the rendered page, not bundled code.
   $('script, style, noscript').remove();
 
   const titlePresent = $('title').first().text().trim().length > 0;
@@ -413,6 +418,7 @@ export function extractFeaturesFromHtml(html: string, pageUrl: string): Extracte
   const primaryCtaText = ctaAnalysis.primaryCtaText;
 
   const formPresent = $('form').length > 0;
+  // Form complexity is approximated from interactive controls, not validation or backend logic.
   const formFieldCount = $('form input, form select, form textarea, form button').length;
   const navLinkCount = $('nav a').length;
 

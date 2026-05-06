@@ -52,6 +52,7 @@ export async function fetchPageHtml(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    // Fetch only HTML-like responses so downstream extraction sees predictable input.
     const response = await fetch(normalizedUrl, {
       method: 'GET',
       redirect: 'follow',
@@ -100,6 +101,7 @@ export async function fetchPageHtml(
       status: response.status,
     };
   } catch (error) {
+    // Normalize transport failures into structured results instead of throwing through the pipeline.
     const message =
       error instanceof Error && error.name === 'AbortError'
         ? `Request timed out after ${timeoutMs}ms`

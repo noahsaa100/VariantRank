@@ -48,6 +48,7 @@ function withAssistMetadata(
   goalAssist: GoalMappingAssist,
   ctaAssist: CtaClassificationAssist | null,
 ): ExtractedFeatures {
+  // Preserve how the page was interpreted so stored results remain auditable.
   return {
     ...features,
     aiAssist: {
@@ -107,6 +108,7 @@ function getCommitmentBoost(level: CommitmentLevel): number {
 }
 
 function getGoalSpecificCommitmentAdjustment(goalKey: GoalKey, level: CommitmentLevel): number {
+  // Commitment is desirable or risky depending on the stage implied by the goal.
   if (goalKey === 'directPurchase') {
     if (level === 'high') return 8;
     if (level === 'medium') return 4;
@@ -127,6 +129,7 @@ function getGoalSpecificCommitmentAdjustment(goalKey: GoalKey, level: Commitment
 
 function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey): BehaviouralScores {
   if (features.analysisError) {
+    // Keep fallback analyses scoreable without fabricating strong behavioural evidence.
     return {
       messageClarity: 8,
       valueCommunication: 8,
@@ -150,7 +153,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   const commitmentLevel = cta.primaryCommitmentLevel;
   const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
 
-  // Lower density (more headings per word volume) is easier to scan.
+  // More headings per unit of copy usually means faster scanning.
   const contentDensityAdjustment =
     contentDensity <= 30
       ? 5
@@ -161,6 +164,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   // Synthesises verb presence, CTA type, and commitment into a single 0–100 clarity signal.
   // Scaled by 0.6 in actionOrientation (range 12–54), replacing the old fragmented
   // primaryCtaText-presence + primaryType-branch contributions.
+  // Collapse CTA wording quality into one signal before goal weighting is applied.
   const ctaClarityScore: number = (() => {
     if (!primaryVerbPresent) return 20;                  // no verb → very low clarity
     if (primaryType === 'action') return 90;             // action verb + action type → high clarity
@@ -194,6 +198,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
 
   // Ordered by severity; short-circuits so only the most impactful adjustment fires per variant.
   // Keeps actionOrientation low when there is no usable action signal, and high when intent is clear.
+  // Apply only the strongest CTA-intent deduction to avoid stacking near-duplicate penalties.
   const ctaSignalAdjustment: number = (() => {
     if (features.ctaCount === 0) return -20;                                          // no CTA → strong suppression
     if (!primaryVerbPresent) return -10;                                              // CTA present but intent unreadable
@@ -223,6 +228,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
 
   // No-form pages get a neutral baseline: absence of a form is not inherently efficient.
   // Field-count tiers reflect progressive friction as forms grow longer.
+  // Approximate interaction effort from form length rather than treating every form equally.
   const formEfficiencyBase = !features.formPresent
     ? 55
     : features.formFieldCount <= 2
@@ -300,6 +306,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
 function applyGoalMultipliers(baseScores: BehaviouralScores, goalKey: GoalKey): BehaviouralScores {
   const multipliers = GOAL_WEIGHT_MATRICES[goalKey].conceptMultipliers;
 
+  // Reweight the same evidence differently for each evaluation goal.
   return ALL_CONCEPTS.reduce((acc, concept) => {
     acc[concept] = toScore(baseScores[concept] * multipliers[concept]);
     return acc;
@@ -311,6 +318,7 @@ function deriveCategoryScores(conceptScores: BehaviouralScores): CategoryScores 
     const map = CATEGORY_CONCEPT_MAP[category];
     let total = 0;
 
+    // Category scores are weighted blends of the lower-level behavioural concepts.
     for (const concept of ALL_CONCEPTS) {
       const weight = map[concept] ?? 0;
       if (weight > 0) {
@@ -339,6 +347,7 @@ function deriveRulePenalties(
   goalKey: GoalKey,
 ): RulePenalty[] {
   if (features.analysisError) {
+    // Failed fetches still return a deterministic result with an explicit technical penalty.
     return [
       {
         rule: `Technical fallback: Page fetch failed (${features.analysisError})`,
@@ -353,7 +362,7 @@ function deriveRulePenalties(
   const hasRiskReduction = cta.riskReductionCues.length > 0;
   const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
 
-  // Placed first to guarantee it survives the slice(0, 8) truncation.
+  // Keep the absence of a CTA visible even when later rules also fire.
   if (features.ctaCount === 0) {
     penalties.push({
       rule: 'UX/Friction risk: No clear CTA detected',
@@ -377,6 +386,7 @@ function deriveRulePenalties(
 
   // CTA ambiguity group — only fires when CTAs are present to avoid overlap with the no-CTA penalty.
   // if/else-if ensures exactly one tier fires per evaluation, preventing internal double-counting.
+  // Isolate CTA ambiguity into one tier so the same weakness is not double-counted.
   if (features.ctaCount > 0) {
     const isInformational = cta.primaryCtaType === 'informational';
     const verbMissing = !cta.primaryVerb;
@@ -462,6 +472,7 @@ function deriveRulePenalties(
     .filter((concept) => multipliers[concept] > 1.1)
     .slice(0, 3);
 
+  // Escalate weak concepts only when that concept is strategically important for the goal.
   for (const concept of priorityConcepts) {
     const score = conceptScores[concept];
     if (score >= 50) continue;
@@ -567,6 +578,7 @@ async function analyzeVariant(
   goalAssist: GoalMappingAssist,
 ): Promise<VariantComputation> {
   try {
+    // Pipeline: fetch -> extract -> optional AI CTA assist -> score -> rankable result.
     const fetchResult = await fetchPageHtml(url);
     const extracted = fetchResult.ok
       ? extractFeaturesFromHtml(fetchResult.html, fetchResult.finalUrl)
@@ -590,6 +602,7 @@ async function analyzeVariant(
       features,
     };
   } catch (error) {
+    // Guard the whole pipeline so one analysis failure does not abort the batch.
     const message = error instanceof Error ? error.message : 'Unexpected analysis error';
     const fallback = createFallbackFeatures(url, message);
     const features = withAssistMetadata(fallback, goalAssist, null);
@@ -624,6 +637,7 @@ export async function createEvaluation(input: CreateEvaluationInput) {
 
   const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey, goalAssist)));
 
+  // Rank after all variants are scored so persistence does not depend on request order.
   const ranked = [...variantData].sort((a, b) => b.totalScore - a.totalScore);
   const rankMap = new Map<number, number>(ranked.map((variant, rankIndex) => [variant.index, rankIndex + 1]));
 

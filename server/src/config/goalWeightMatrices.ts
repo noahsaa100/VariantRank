@@ -6,6 +6,7 @@ interface GoalWeightMatrix {
   categoryWeights: Record<TopLevelCategory, number>;
 }
 
+// Each goal reinterprets the same behavioural evidence through a different optimization lens.
 export const GOAL_WEIGHT_MATRICES: Record<GoalKey, GoalWeightMatrix> = {
   leadGeneration: {
     conceptMultipliers: {

@@ -38,6 +38,7 @@ function mapGoalDescriptionByRules(goalDescription: string): GoalMappingAssist |
   const description = normalize(goalDescription);
   if (!description) return null;
 
+  // Lightweight fallback mapping when AI is unavailable or returns no usable result.
   const scored = GOAL_RULES.map((rule) => {
     const score = rule.keywords.reduce((sum, keyword) => sum + (description.includes(keyword) ? 1 : 0), 0);
     return { rule, score };
@@ -78,6 +79,7 @@ export async function resolveGoalWithAssist(goal: string, goalDescription?: stri
     };
   }
 
+  // Resolution order is AI -> keyword rules -> selected goal fallback.
   const aiMapped = await mapGoalDescriptionWithAi(normalizedDescription);
   if (aiMapped) {
     return {
