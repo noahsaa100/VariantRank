@@ -39,6 +39,7 @@ describe('htmlFeatureExtractor', () => {
     expect(features.headingCount).toBe(2);
     expect(features.formPresent).toBe(true);
     expect(features.formFieldCount).toBe(2);
+    expect(features.formPurpose).toBe('conversion');
     expect(features.navLinkCount).toBe(2);
     expect(features.contactInfoPresent).toBe(true);
     expect(features.testimonialKeywordsPresent).toBe(true);
@@ -118,6 +119,7 @@ describe('htmlFeatureExtractor', () => {
     expect(features.promotionalCtaTexts).toEqual(['Shop the offer']);
     expect(features.formPresent).toBe(true);
     expect(features.formFieldCount).toBe(1);
+    expect(features.formPurpose).toBe('product');
   });
 
   it('does not combine navigation, localization, newsletter, and product forms', () => {
@@ -148,6 +150,7 @@ describe('htmlFeatureExtractor', () => {
 
     expect(features.formPresent).toBe(true);
     expect(features.formFieldCount).toBe(1);
+    expect(features.formPurpose).toBe('product');
     expect(features.primaryCtaText).toBe('Add to Cart');
   });
 });

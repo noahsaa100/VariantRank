@@ -1,4 +1,5 @@
 const DEFAULT_TIMEOUT_MS = 10000;
+const MAX_REDIRECTS = 5;
 
 export interface PageFetchSuccess {
   ok: true;
@@ -15,6 +16,68 @@ export interface PageFetchFailure {
 }
 
 export type PageFetchResult = PageFetchSuccess | PageFetchFailure;
+
+function getSetCookieHeaders(headers: Headers): string[] {
+  const extendedHeaders = headers as Headers & { getSetCookie?: () => string[] };
+  const values = extendedHeaders.getSetCookie?.();
+  if (values && values.length > 0) return values;
+  const combined = headers.get('set-cookie');
+  return combined ? [combined] : [];
+}
+
+function cookiePairs(setCookieHeaders: string[]): string[] {
+  return setCookieHeaders
+    .map((header) => header.split(';', 1)[0]?.trim())
+    .filter((cookie): cookie is string => Boolean(cookie && cookie.includes('=')));
+}
+
+async function fetchWithSameSiteRedirectCookies(
+  initialUrl: string,
+  signal: AbortSignal,
+): Promise<{ response: Response; finalUrl: string }> {
+  let currentUrl = initialUrl;
+  const cookiesByOrigin = new Map<string, Map<string, string>>();
+
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    const current = new URL(currentUrl);
+    const originCookies = cookiesByOrigin.get(current.origin);
+    const cookieHeader = originCookies ? [...originCookies.values()].join('; ') : '';
+    const response = await fetch(currentUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      signal,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'VariantRankBot/1.0 (+https://variantrank.local)',
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      },
+    });
+
+    const receivedCookies = cookiePairs(getSetCookieHeaders(response.headers));
+    if (receivedCookies.length > 0) {
+      const jar = originCookies ?? new Map<string, string>();
+      for (const cookie of receivedCookies) {
+        const name = cookie.slice(0, cookie.indexOf('='));
+        jar.set(name, cookie);
+      }
+      cookiesByOrigin.set(current.origin, jar);
+    }
+
+    if (response.status < 300 || response.status >= 400) {
+      return { response, finalUrl: currentUrl };
+    }
+
+    const location = response.headers.get('location');
+    if (!location) return { response, finalUrl: currentUrl };
+    const nextUrl = new URL(location, currentUrl);
+    if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
+      throw new Error(`Unsupported redirect protocol: ${nextUrl.protocol}`);
+    }
+    currentUrl = nextUrl.toString();
+  }
+
+  throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
+}
 
 function normalizeUrl(input: string): string | null {
   const trimmed = input.trim();
@@ -53,17 +116,7 @@ export async function fetchPageHtml(
 
   try {
     // Fetch only HTML-like responses so downstream extraction sees predictable input.
-    const response = await fetch(normalizedUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        Accept: 'text/html,application/xhtml+xml',
-        'User-Agent': 'VariantRankBot/1.0 (+https://variantrank.local)',
-      },
-    });
-
-    const finalUrl = response.url || normalizedUrl;
+    const { response, finalUrl } = await fetchWithSameSiteRedirectCookies(normalizedUrl, controller.signal);
 
     if (!response.ok) {
       return {

@@ -277,7 +277,9 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     Math.min(responsibilityCueCount, 2) * 3 +
     ecommerceClarityAdjustment +
     (features.formPresent ? 20 : 10) +
-    (features.formPresent
+    (features.formPurpose === 'product'
+      ? 12
+      : features.formPresent
       ? features.formFieldCount <= 6
         ? 15
         : features.formFieldCount <= 10
@@ -289,7 +291,11 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   // No-form pages get a neutral baseline: absence of a form is not inherently efficient.
   // Field-count tiers reflect progressive friction as forms grow longer.
   // Approximate interaction effort from form length rather than treating every form equally.
-  const formEfficiencyBase = !features.formPresent
+  const formEfficiencyBase = features.formPurpose === 'product'
+    ? features.formFieldCount <= 10
+      ? 80
+      : 65
+    : !features.formPresent
     ? 55
     : features.formFieldCount <= 2
       ? 90
@@ -472,7 +478,7 @@ function deriveRulePenalties(
   if (features.ctaCount > 4) {
     penalties.push({ rule: 'UX risk: High CTA count may cause choice overload', penalty: -4 });
   }
-  if (features.formPresent) {
+  if (features.formPresent && features.formPurpose !== 'product') {
     if (features.formFieldCount >= 13) {
       penalties.push({ rule: 'Friction risk: Form is very long (13+ fields)', penalty: -12 });
     } else if (features.formFieldCount >= 10) {

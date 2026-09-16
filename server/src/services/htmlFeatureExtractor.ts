@@ -41,6 +41,7 @@ export interface ExtractedFeatures extends Record<string, unknown> {
   primaryCtaText: string | null;
   formPresent: boolean;
   formFieldCount: number;
+  formPurpose: 'product' | 'conversion' | 'none';
   promotionPresent: boolean;
   promotionOfferPresent: boolean;
   promotionalCtaTexts: string[];
@@ -487,7 +488,11 @@ function extractPromotionFeatures($: ReturnType<typeof load>): {
   };
 }
 
-function extractRelevantFormFeatures($: ReturnType<typeof load>): { formPresent: boolean; formFieldCount: number } {
+function extractRelevantFormFeatures($: ReturnType<typeof load>): {
+  formPresent: boolean;
+  formFieldCount: number;
+  formPurpose: 'product' | 'conversion' | 'none';
+} {
   const contentRoot = $('main').first().length > 0 ? $('main').first() : $('body');
   const forms = contentRoot
     .find('form')
@@ -514,6 +519,7 @@ function extractRelevantFormFeatures($: ReturnType<typeof load>): { formPresent:
   return {
     formPresent: relevantForms.length > 0,
     formFieldCount: relevantForms.reduce((maximum, form) => Math.max(maximum, form.fields), 0),
+    formPurpose: preferredForms.length > 0 ? 'product' : relevantForms.length > 0 ? 'conversion' : 'none',
   };
 }
 
@@ -531,6 +537,7 @@ export function createFallbackFeatures(url: string, error: string): ExtractedFea
     primaryCtaText: null,
     formPresent: false,
     formFieldCount: 0,
+    formPurpose: 'none',
     promotionPresent: false,
     promotionOfferPresent: false,
     promotionalCtaTexts: [],
@@ -576,7 +583,7 @@ export function extractFeaturesFromHtml(html: string, pageUrl: string): Extracte
   const ctaCount = ctaAnalysis.details.length;
   const primaryCtaText = ctaAnalysis.primaryCtaText;
 
-  const { formPresent, formFieldCount } = extractRelevantFormFeatures($);
+  const { formPresent, formFieldCount, formPurpose } = extractRelevantFormFeatures($);
   const promotionFeatures = extractPromotionFeatures($);
   const pageRiskReductionCues = findMatchedCues(pageText.toLowerCase(), RISK_REDUCTION_CUES);
   const navLinkCount = $('nav a').length;
@@ -598,6 +605,7 @@ export function extractFeaturesFromHtml(html: string, pageUrl: string): Extracte
     primaryCtaText,
     formPresent,
     formFieldCount,
+    formPurpose,
     ...promotionFeatures,
     pageRiskReductionCues,
     navLinkCount,
