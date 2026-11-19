@@ -1,6 +1,12 @@
 import { canUseAiAssist, AI_ASSIST_MODEL, AI_ASSIST_TIMEOUT_MS, OPENAI_API_BASE_URL } from '../config/aiAssist';
 import type { GoalKey } from '../config/goals';
-import type { AiActionType, AiCommitmentLevel, CtaClassificationAssist } from '../types/aiAssist';
+import type {
+  AiActionType,
+  AiCommitmentLevel,
+  CtaClassificationAssist,
+  EcommerceAnalysisAssist,
+} from '../types/aiAssist';
+import type { EcommerceAiContext } from './htmlFeatureExtractor';
 
 const VALID_GOAL_KEYS = new Set<GoalKey>([
   'leadGeneration',
@@ -26,6 +32,17 @@ interface OpenAiChatResponse {
 function toSafeConfidence(value: unknown, fallback = 0.5): number {
   if (typeof value !== 'number' || Number.isNaN(value)) return fallback;
   return Math.max(0, Math.min(1, Number(value.toFixed(2))));
+}
+
+function toSafeScore(value: unknown, fallback = 50): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) return fallback;
+  return Math.max(0, Math.min(100, Number(value.toFixed(1))));
+}
+
+function toEvidence(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, 240) : null;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
@@ -170,5 +187,78 @@ Rules:
     source: 'ai',
     confidence: toSafeConfidence(json.confidence, 0.55),
     reasoning: typeof json.reasoning === 'string' ? json.reasoning : 'AI classified primary CTA.',
+  };
+}
+
+export async function analyzeEcommercePageWithAi(
+  context: EcommerceAiContext,
+): Promise<EcommerceAnalysisAssist | null> {
+  const systemPrompt = `
+You audit ecommerce product-page evidence. Use only the supplied text and controls; never invent evidence.
+Reply JSON only with this shape:
+{
+  "pageType": "product|collection|cart|other",
+  "primaryPurchaseCta": string|null,
+  "evidence": {
+    "reviews": string|null,
+    "offer": string|null,
+    "delivery": string|null,
+    "returns": string|null,
+    "guarantee": string|null,
+    "stock": string|null,
+    "payment": string|null,
+    "subscription": string|null
+  },
+  "scores": {
+    "purchaseClarity": number,
+    "purchaseConfidence": number,
+    "offerStrength": number,
+    "merchandisingQuality": number
+  },
+  "reasoning": string[],
+  "confidence": number
+}
+Scores are 0-100. Confidence is 0-1. Missing evidence must be null. Focus on purchase support, not general brand copy.
+`;
+  const userPrompt = JSON.stringify(context);
+  const json = await requestAiJson(systemPrompt, userPrompt);
+  if (!json) return null;
+
+  const allowedPageTypes = new Set(['product', 'collection', 'cart', 'other']);
+  const pageType = typeof json.pageType === 'string' && allowedPageTypes.has(json.pageType)
+    ? (json.pageType as EcommerceAnalysisAssist['pageType'])
+    : 'other';
+  const evidence = json.evidence && typeof json.evidence === 'object' && !Array.isArray(json.evidence)
+    ? json.evidence as Record<string, unknown>
+    : {};
+  const scores = json.scores && typeof json.scores === 'object' && !Array.isArray(json.scores)
+    ? json.scores as Record<string, unknown>
+    : {};
+  const reasoning = Array.isArray(json.reasoning)
+    ? json.reasoning.filter((item): item is string => typeof item === 'string').map((item) => item.slice(0, 300)).slice(0, 6)
+    : [];
+
+  return {
+    pageType,
+    primaryPurchaseCta: toEvidence(json.primaryPurchaseCta),
+    evidence: {
+      reviews: toEvidence(evidence.reviews),
+      offer: toEvidence(evidence.offer),
+      delivery: toEvidence(evidence.delivery),
+      returns: toEvidence(evidence.returns),
+      guarantee: toEvidence(evidence.guarantee),
+      stock: toEvidence(evidence.stock),
+      payment: toEvidence(evidence.payment),
+      subscription: toEvidence(evidence.subscription),
+    },
+    scores: {
+      purchaseClarity: toSafeScore(scores.purchaseClarity),
+      purchaseConfidence: toSafeScore(scores.purchaseConfidence),
+      offerStrength: toSafeScore(scores.offerStrength),
+      merchandisingQuality: toSafeScore(scores.merchandisingQuality),
+    },
+    reasoning,
+    source: 'ai',
+    confidence: toSafeConfidence(json.confidence, 0.5),
   };
 }

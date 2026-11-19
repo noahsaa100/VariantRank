@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { getEvaluation } from '../api/evaluations';
 import type { Evaluation } from '../types';
 import { VariantCard } from '../components/VariantCard';
+import { ComparisonSummary } from '../components/ComparisonSummary';
 
 export function Results() {
   const { id } = useParams<{ id: string }>();
@@ -40,6 +41,7 @@ export function Results() {
           <VariantCard key={variant.id} variant={variant} evaluationId={evaluation.id} />
         ))}
       </div>
+      <ComparisonSummary variants={sorted} />
     </div>
   );
 }

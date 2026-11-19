@@ -44,6 +44,7 @@ vi.mock('../pageFetcher', () => ({
 }));
 
 vi.mock('../aiAssistService', () => ({
+  analyzeEcommercePageWithAi: vi.fn(async () => null),
   classifyPrimaryCtaWithAi: vi.fn(async () => null),
   mapGoalDescriptionWithAi: vi.fn(async () => null),
 }));

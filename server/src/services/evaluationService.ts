@@ -9,10 +9,12 @@ import {
 } from '../config/behaviouralScoring';
 import { GOAL_WEIGHT_MATRICES } from '../config/goalWeightMatrices';
 import { GOAL_LABELS, type GoalKey } from '../config/goals';
-import type { CtaClassificationAssist, GoalMappingAssist } from '../types/aiAssist';
-import { classifyPrimaryCtaWithAi } from './aiAssistService';
+import type { CtaClassificationAssist, EcommerceAnalysisAssist, GoalMappingAssist } from '../types/aiAssist';
+import { analyzeEcommercePageWithAi, classifyPrimaryCtaWithAi } from './aiAssistService';
 import {
   createFallbackFeatures,
+  analyzeCtaText,
+  extractEcommerceAiContext,
   extractFeaturesFromHtml,
   type CommitmentLevel,
   type CtaAnalysis,
@@ -43,10 +45,52 @@ interface VariantComputation {
 
 const ALL_CONCEPTS = Object.keys(CONCEPT_LABELS) as BehaviouralConcept[];
 
+function applyAiPurchaseCta(
+  features: ExtractedFeatures,
+  ecommerceAssist: EcommerceAnalysisAssist | null,
+  ecommerceContext: ReturnType<typeof extractEcommerceAiContext> | null,
+): ExtractedFeatures {
+  const candidate = ecommerceAssist?.primaryPurchaseCta?.trim();
+  if (!candidate || !ecommerceContext) return features;
+
+  const lowerCandidate = candidate.toLowerCase();
+  const evidenceText = `${ecommerceContext.controls.join(' ')} ${ecommerceContext.visibleText}`.toLowerCase();
+  if (!evidenceText.includes(lowerCandidate)) return features;
+
+  const analyzed = analyzeCtaText(candidate);
+  const primaryDetail = analyzed.ctaType === 'unknown'
+    ? { ...analyzed, ctaType: 'action' as const, commitmentLevel: 'medium' as const }
+    : analyzed;
+  const existingDetails = features.ctaAnalysis.details.filter(
+    (detail) => detail.text.toLowerCase() !== lowerCandidate,
+  );
+  const details = [primaryDetail, ...existingDetails].slice(0, 12);
+  const ctaTexts = details.map((detail) => detail.text);
+
+  return {
+    ...features,
+    primaryCtaText: candidate,
+    ctaCount: details.length,
+    ctaAnalysis: {
+      ...features.ctaAnalysis,
+      ctaTexts,
+      details,
+      primaryCtaText: candidate,
+      primaryVerb: primaryDetail.primaryVerb,
+      primaryCtaType: primaryDetail.ctaType,
+      primaryCommitmentLevel: primaryDetail.commitmentLevel,
+      actionCtaCount: details.filter((detail) => detail.ctaType === 'action').length,
+      informationalCtaCount: details.filter((detail) => detail.ctaType === 'informational').length,
+      mixedCtaCount: details.filter((detail) => detail.ctaType === 'mixed').length,
+    },
+  };
+}
+
 function withAssistMetadata(
   features: ExtractedFeatures,
   goalAssist: GoalMappingAssist,
   ctaAssist: CtaClassificationAssist | null,
+  ecommerceAssist: EcommerceAnalysisAssist | null = null,
 ): ExtractedFeatures {
   // Preserve how the page was interpreted so stored results remain auditable.
   return {
@@ -54,6 +98,7 @@ function withAssistMetadata(
     aiAssist: {
       goalMapping: goalAssist,
       ...(ctaAssist ? { ctaClassification: ctaAssist } : {}),
+      ...(ecommerceAssist ? { ecommerceAnalysis: ecommerceAssist } : {}),
     },
   };
 }
@@ -146,11 +191,22 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   const cta = features.ctaAnalysis as CtaAnalysis;
   const ctaDiversity = cta.actionCtaCount + cta.mixedCtaCount + cta.informationalCtaCount;
   const riskCueCount = cta.riskReductionCues.length;
+  const pageRiskCueCount = features.pageRiskReductionCues.length;
   const effortCueCount = cta.effortCues.length;
   const responsibilityCueCount = cta.responsibilityCues.length;
   const primaryVerbPresent = Boolean(cta.primaryVerb);
   const primaryType = cta.primaryCtaType;
   const commitmentLevel = cta.primaryCommitmentLevel;
+  const ecommerce = features.aiAssist?.ecommerceAnalysis;
+  const ecommerceValueAdjustment = ecommerce
+    ? Math.round((((ecommerce.scores.offerStrength + ecommerce.scores.merchandisingQuality) / 2) - 50) * 0.12)
+    : 0;
+  const ecommerceClarityAdjustment = ecommerce
+    ? Math.round((ecommerce.scores.purchaseClarity - 50) * 0.12)
+    : 0;
+  const ecommerceConfidenceAdjustment = ecommerce
+    ? Math.round((ecommerce.scores.purchaseConfidence - 50) * 0.12)
+    : 0;
   const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
 
   // More headings per unit of copy usually means faster scanning.
@@ -189,11 +245,14 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     (primaryVerbPresent ? 12 : 0) +
     (primaryType === 'action' ? 12 : primaryType === 'mixed' ? 8 : primaryType === 'informational' ? 5 : 0) +
     Math.min(riskCueCount, 3) * 8 +
+    Math.min(pageRiskCueCount, 2) * 4 +
     Math.min(responsibilityCueCount, 2) * 4 +
     (features.wordCount >= 80 ? 15 : 0) +
     (features.testimonialKeywordsPresent ? 10 : 0) +
     (features.faqKeywordsPresent ? 8 : 0) +
-    (features.formPresent ? 8 : 0),
+    (features.formPresent ? 8 : 0) +
+    (features.promotionOfferPresent ? 6 : 0) +
+    ecommerceValueAdjustment,
   );
 
   // Ordered by severity; short-circuits so only the most impactful adjustment fires per variant.
@@ -216,8 +275,11 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     getGoalSpecificCommitmentAdjustment(goalKey, commitmentLevel) +
     Math.min(riskCueCount, 2) * 5 +
     Math.min(responsibilityCueCount, 2) * 3 +
+    ecommerceClarityAdjustment +
     (features.formPresent ? 20 : 10) +
-    (features.formPresent
+    (features.formPurpose === 'product'
+      ? 12
+      : features.formPresent
       ? features.formFieldCount <= 6
         ? 15
         : features.formFieldCount <= 10
@@ -229,7 +291,11 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
   // No-form pages get a neutral baseline: absence of a form is not inherently efficient.
   // Field-count tiers reflect progressive friction as forms grow longer.
   // Approximate interaction effort from form length rather than treating every form equally.
-  const formEfficiencyBase = !features.formPresent
+  const formEfficiencyBase = features.formPurpose === 'product'
+    ? features.formFieldCount <= 10
+      ? 80
+      : 65
+    : !features.formPresent
     ? 55
     : features.formFieldCount <= 2
       ? 90
@@ -261,7 +327,9 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     (features.titlePresent ? 10 : 0) +
     (features.metaDescriptionPresent ? 10 : 0) +
     (features.formPresent ? 5 : 0) +
-    Math.min(riskCueCount, 3) * 4,
+    Math.min(riskCueCount, 3) * 4 +
+    Math.min(pageRiskCueCount, 2) * 4 +
+    ecommerceConfidenceAdjustment,
   );
 
   const supportConfidence = toScore(
@@ -359,7 +427,7 @@ function deriveRulePenalties(
   const penalties: RulePenalty[] = [];
   const cta = features.ctaAnalysis as CtaAnalysis;
   const hasActionIntent = cta.actionCtaCount + cta.mixedCtaCount > 0;
-  const hasRiskReduction = cta.riskReductionCues.length > 0;
+  const hasRiskReduction = cta.riskReductionCues.length > 0 || features.pageRiskReductionCues.length > 0;
   const contentDensity = features.wordCount / Math.max(features.headingCount, 1);
 
   // Keep the absence of a CTA visible even when later rules also fire.
@@ -410,7 +478,7 @@ function deriveRulePenalties(
   if (features.ctaCount > 4) {
     penalties.push({ rule: 'UX risk: High CTA count may cause choice overload', penalty: -4 });
   }
-  if (features.formPresent) {
+  if (features.formPresent && features.formPurpose !== 'product') {
     if (features.formFieldCount >= 13) {
       penalties.push({ rule: 'Friction risk: Form is very long (13+ fields)', penalty: -12 });
     } else if (features.formFieldCount >= 10) {
@@ -456,7 +524,7 @@ function deriveRulePenalties(
     penalties.push({ rule: 'Goal-fit risk: High-commitment CTA may suppress content engagement intent', penalty: -5 });
   }
   if (
-    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation' || goalKey === 'directPurchase') &&
+    (goalKey === 'leadGeneration' || goalKey === 'trialSignup' || goalKey === 'bookingConsultation') &&
     hasActionIntent &&
     !hasRiskReduction
   ) {
@@ -537,6 +605,13 @@ function deriveTopDrivers(
     );
   }
 
+  const ecommerce = features.aiAssist?.ecommerceAnalysis;
+  if (ecommerce) {
+    drivers.push(
+      `AI ecommerce: purchase clarity ${ecommerce.scores.purchaseClarity.toFixed(0)}, confidence ${ecommerce.scores.purchaseConfidence.toFixed(0)}, offer strength ${ecommerce.scores.offerStrength.toFixed(0)}`,
+    );
+  }
+
   if (cta.primaryVerb && features.primaryCtaText) {
     drivers.push(
       `CTA quality: "${features.primaryCtaText}" uses action verb "${cta.primaryVerb}" with ${cta.primaryCommitmentLevel} commitment`,
@@ -544,6 +619,12 @@ function deriveTopDrivers(
   }
   if (cta.riskReductionCues.length > 0) {
     drivers.push(`CTA reassurance: risk-reduction cues detected (${cta.riskReductionCues.join(', ')})`);
+  }
+  if (features.pageRiskReductionCues.length > 0) {
+    drivers.push(`Page reassurance: risk-reduction cues detected (${features.pageRiskReductionCues.join(', ')})`);
+  }
+  if (features.promotionOfferPresent) {
+    drivers.push('Offer visibility: a promotional value cue is present without replacing the primary CTA');
   }
   if (cta.actionCtaCount + cta.mixedCtaCount >= 2) {
     drivers.push(`CTA coverage: ${cta.actionCtaCount + cta.mixedCtaCount} action-oriented CTA options detected`);
@@ -553,7 +634,6 @@ function deriveTopDrivers(
       `AI assist: CTA classified as ${aiCta.actionType} / ${aiCta.commitmentLevel} commitment (confidence ${Math.round(aiCta.confidence * 100)}%)`,
     );
   }
-
   const rankedConcepts = [...ALL_CONCEPTS].sort((a, b) => conceptScores[b] - conceptScores[a]);
   for (const concept of rankedConcepts) {
     if (drivers.length >= 4) break;
@@ -583,10 +663,15 @@ async function analyzeVariant(
     const extracted = fetchResult.ok
       ? extractFeaturesFromHtml(fetchResult.html, fetchResult.finalUrl)
       : createFallbackFeatures(fetchResult.finalUrl || url, fetchResult.error);
-    const aiCta = extracted.primaryCtaText
-      ? await classifyPrimaryCtaWithAi(extracted.primaryCtaText, goalKey)
+    const ecommerceContext = fetchResult.ok && goalKey === 'directPurchase'
+      ? extractEcommerceAiContext(fetchResult.html, fetchResult.finalUrl)
       : null;
-    const features = withAssistMetadata(extracted, goalAssist, aiCta);
+    const ecommerceAssist = ecommerceContext ? await analyzeEcommercePageWithAi(ecommerceContext) : null;
+    const ecommerceAdjusted = applyAiPurchaseCta(extracted, ecommerceAssist, ecommerceContext);
+    const aiCta = ecommerceAdjusted.primaryCtaText
+      ? await classifyPrimaryCtaWithAi(ecommerceAdjusted.primaryCtaText, goalKey)
+      : null;
+    const features = withAssistMetadata(ecommerceAdjusted, goalAssist, aiCta, ecommerceAssist);
 
     const baseConceptScores = deriveBehaviouralScores(features, goalKey);
     const goalAdjustedConceptScores = applyGoalMultipliers(baseConceptScores, goalKey);
