@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'New Evaluation' },
   { to: '/history', label: 'History' },
   { to: '/compare', label: 'Compare' },
+  { to: '/data', label: 'Data' },
 ];
 
 function getPageTitle(pathname: string): string {
@@ -13,6 +14,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/results/')) return 'Results';
   if (pathname === '/history') return 'Evaluation History';
   if (pathname === '/compare') return 'Compare Evaluations';
+  if (pathname.startsWith('/data')) return 'Data';
   return 'VariantRank';
 }
 

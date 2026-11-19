@@ -5,6 +5,8 @@ import { Results } from './pages/Results';
 import { VariantDetail } from './pages/VariantDetail';
 import { History } from './pages/History';
 import { Compare } from './pages/Compare';
+import { Data } from './pages/Data';
+import { ImportReview } from './pages/ImportReview';
 
 function App() {
   return (
@@ -16,6 +18,8 @@ function App() {
           <Route path="/results/:id/variant/:variantId" element={<VariantDetail />} />
           <Route path="/history" element={<History />} />
           <Route path="/compare" element={<Compare />} />
+          <Route path="/data" element={<Data />} />
+          <Route path="/data/imports/:importId" element={<ImportReview />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

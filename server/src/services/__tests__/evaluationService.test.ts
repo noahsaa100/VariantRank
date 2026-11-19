@@ -30,6 +30,10 @@ vi.mock('@prisma/client', () => {
       deleteMany: vi.fn(async () => ({ count: 0 })),
     };
 
+    libraryVersion = {
+      findFirst: vi.fn(async () => null),
+    };
+
     $transaction = vi.fn(async (operations: Promise<unknown>[]) => Promise.all(operations));
   }
 

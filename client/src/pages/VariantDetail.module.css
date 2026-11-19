@@ -42,9 +42,126 @@
   overflow-wrap: anywhere;
 }
 
+.checkSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.checkDisclosure {
+  width: 100%;
+}
+
+.disclosureSummary {
+  cursor: pointer;
+  font-weight: 700;
+  list-style-position: outside;
+  margin-left: 1rem;
+}
+
+.checkDisclosure[open] .disclosureSummary {
+  margin-bottom: var(--space-4);
+}
+
+.checkDetails {
+  width: 100%;
+}
+
+.checkDetails > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.checkDetails > summary::-webkit-details-marker {
+  display: none;
+}
+
+.checkSummary span {
+  font-size: 0.85rem;
+}
+
+.checkList {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checkRow {
+  padding: var(--space-5) 0;
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.checkRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.checkHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.checkTitle {
+  display: block;
+  font-size: 1rem;
+}
+
+.checkDescription,
+.evidence {
+  margin: var(--space-2) 0 0;
+  line-height: 1.55;
+}
+
+.checkDescription {
+  color: var(--color-text-muted);
+}
+
+.evidence {
+  padding: var(--space-3);
+  background: var(--cake-cream);
+}
+
+.checkMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.status {
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.statusGOOD { color: #197348; }
+.statusCAN_BE_IMPROVED { color: #8a5a00; }
+.statusBAD { color: #b42318; }
+.statusNOT_RELEVANT { color: #666; }
+.statusNEEDS_REVIEW { color: #4a4fb3; }
+.statusNOT_OBSERVED { color: #666; }
+
 @media (max-width: 44rem) {
   .featureList {
     grid-template-columns: 1fr;
+  }
+
+  .checkHeading {
+    flex-direction: column;
   }
 }
 

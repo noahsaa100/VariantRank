@@ -1,4 +1,10 @@
-import { canUseAiAssist, AI_ASSIST_MODEL, AI_ASSIST_TIMEOUT_MS, OPENAI_API_BASE_URL } from '../config/aiAssist';
+import {
+  AI_ASSIST_MAX_TOKENS,
+  AI_ASSIST_MODEL,
+  AI_ASSIST_TIMEOUT_MS,
+  ANTHROPIC_API_BASE_URL,
+  canUseAiAssist,
+} from '../config/aiAssist';
 import type { GoalKey } from '../config/goals';
 import type {
   AiActionType,
@@ -19,15 +25,21 @@ const VALID_GOAL_KEYS = new Set<GoalKey>([
 const VALID_ACTION_TYPES = new Set<AiActionType>(['action', 'informational', 'mixed', 'unknown']);
 const VALID_COMMITMENT_LEVELS = new Set<AiCommitmentLevel>(['low', 'medium', 'high', 'unknown']);
 
-interface OpenAiChatChoice {
-  message?: {
-    content?: string;
-  };
+interface AnthropicContentBlock {
+  type?: string;
+  text?: string;
 }
 
-interface OpenAiChatResponse {
-  choices?: OpenAiChatChoice[];
+interface AnthropicMessageResponse {
+  content?: AnthropicContentBlock[];
+  usage?: { input_tokens?: number; output_tokens?: number };
 }
+
+type AnthropicUserContent = string | Array<{
+  type: 'text' | 'image';
+  text?: string;
+  source?: { type: 'base64'; media_type: 'image/jpeg'; data: string };
+}>;
 
 function toSafeConfidence(value: unknown, fallback = 0.5): number {
   if (typeof value !== 'number' || Number.isNaN(value)) return fallback;
@@ -46,18 +58,31 @@ function toEvidence(value: unknown): string | null {
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
+  const normalized = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
-    const parsed = JSON.parse(text) as unknown;
+    const parsed = JSON.parse(normalized) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
     return null;
   } catch {
-    return null;
+    // Claude is instructed to return JSON only, but this safely recovers an
+    // object if a model wraps it in a short explanatory sentence.
+    const start = normalized.indexOf('{');
+    const end = normalized.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(normalized.slice(start, end + 1)) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
   }
 }
 
-async function requestAiJson(systemPrompt: string, userPrompt: string): Promise<Record<string, unknown> | null> {
+async function requestAiJson(systemPrompt: string, userPrompt: AnthropicUserContent): Promise<Record<string, unknown> | null> {
   if (!canUseAiAssist()) {
     return null;
   }
@@ -66,30 +91,33 @@ async function requestAiJson(systemPrompt: string, userPrompt: string): Promise<
   const timeout = setTimeout(() => controller.abort(), AI_ASSIST_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${OPENAI_API_BASE_URL}/chat/completions`, {
+    const res = await fetch(`${ANTHROPIC_API_BASE_URL}/messages`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'x-api-key': process.env.ANTHROPIC_API_KEY ?? '',
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
         model: AI_ASSIST_MODEL,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+        max_tokens: AI_ASSIST_MAX_TOKENS,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
       }),
     });
 
     if (!res.ok) {
+      const errorBody = await res.text().catch(() => '');
+      console.warn(`Anthropic request failed (${res.status}): ${errorBody.slice(0, 300)}`);
       return null;
     }
 
-    const data = (await res.json()) as OpenAiChatResponse;
-    const content = data.choices?.[0]?.message?.content;
+    const data = (await res.json()) as AnthropicMessageResponse;
+    const content = data.content
+      ?.filter((block) => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('');
     if (!content) return null;
     return parseJsonObject(content);
   } catch {
@@ -97,6 +125,61 @@ async function requestAiJson(systemPrompt: string, userPrompt: string): Promise<
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export interface AiCriterionInput {
+  id: string;
+  description: string;
+  rationale: string | null;
+}
+
+export interface AiCriterionVerdict {
+  criterionId: string;
+  status: 'GOOD' | 'CAN_BE_IMPROVED' | 'BAD' | 'NOT_RELEVANT' | 'NEEDS_REVIEW';
+  evidence: string;
+  confidence: number;
+}
+
+export async function evaluateCriteriaWithAi(input: {
+  pageType: string;
+  visibleText: string;
+  controls: unknown[];
+  headings: unknown[];
+  criteria: AiCriterionInput[];
+  desktopScreenshotBase64: string;
+  mobileScreenshotBase64: string;
+}): Promise<AiCriterionVerdict[]> {
+  const systemPrompt = `
+You evaluate ecommerce best-practice checks using supplied rendered evidence and screenshots.
+Use only observable evidence. Do not invent. Return compact JSON only:
+{"results":[{"criterionId":"...","status":"GOOD|CAN_BE_IMPROVED|BAD|NOT_RELEVANT|NEEDS_REVIEW","evidence":"one specific sentence, maximum 180 characters","confidence":0-1}]}
+Return exactly one result per supplied criterion. Use NEEDS_REVIEW when the evidence cannot support a reliable verdict.
+`;
+  const evidence = JSON.stringify({
+    pageType: input.pageType,
+    visibleText: input.visibleText.slice(0, 22000),
+    controls: input.controls.slice(0, 120),
+    headings: input.headings.slice(0, 60),
+    criteria: input.criteria,
+  });
+  const json = await requestAiJson(systemPrompt, [
+    { type: 'text', text: evidence },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.desktopScreenshotBase64 } },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.mobileScreenshotBase64 } },
+  ]);
+  const allowed = new Set(['GOOD', 'CAN_BE_IMPROVED', 'BAD', 'NOT_RELEVANT', 'NEEDS_REVIEW']);
+  if (!json || !Array.isArray(json.results)) return [];
+  return json.results.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const item = value as Record<string, unknown>;
+    if (typeof item.criterionId !== 'string' || typeof item.status !== 'string' || !allowed.has(item.status)) return [];
+    return [{
+      criterionId: item.criterionId,
+      status: item.status as AiCriterionVerdict['status'],
+      evidence: typeof item.evidence === 'string' ? item.evidence.slice(0, 500) : 'AI verdict based on rendered page evidence.',
+      confidence: toSafeConfidence(item.confidence, 0.5),
+    }];
+  });
 }
 
 export async function mapGoalDescriptionWithAi(goalDescription: string): Promise<{

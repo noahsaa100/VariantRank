@@ -22,6 +22,8 @@ import {
 } from './htmlFeatureExtractor';
 import { fetchPageHtml } from './pageFetcher';
 import { resolveGoalWithAssist } from './goalAssistService';
+import { collectRenderedPage } from './renderedPageCollector';
+import { evaluateCriteriaForPage, type ActiveCriterion, type EvaluatedCriterion } from './criterionEvaluationService';
 
 const prisma = new PrismaClient();
 
@@ -37,10 +39,11 @@ interface VariantComputation {
   index: number;
   url: string;
   totalScore: number;
-  categoryScores: CategoryScores;
+  categoryScores: Record<string, number>;
   rulePenalties: RulePenalty[];
   topDrivers: string[];
   features: ExtractedFeatures;
+  criterionResults?: EvaluatedCriterion[];
 }
 
 const ALL_CONCEPTS = Object.keys(CONCEPT_LABELS) as BehaviouralConcept[];
@@ -656,8 +659,47 @@ async function analyzeVariant(
   index: number,
   goalKey: GoalKey,
   goalAssist: GoalMappingAssist,
+  activeCriteria: ActiveCriterion[],
 ): Promise<VariantComputation> {
   try {
+    if (activeCriteria.length > 0) {
+      const rendered = await collectRenderedPage(url);
+      const extracted = extractFeaturesFromHtml(rendered.html, rendered.finalUrl);
+      const features = withAssistMetadata(extracted, goalAssist, null);
+      const criterionEvaluation = await evaluateCriteriaForPage(activeCriteria, rendered);
+      const categoryLabels: Record<string, string> = {
+        SHOPPING_UX: 'Shopping UX',
+        TRUST_CONFIDENCE: 'Trust & confidence',
+        OFFER_CLARITY: 'Offer clarity',
+        PURCHASE_EASE: 'Purchase ease',
+        TECHNICAL_ACCESSIBILITY: 'Technical & accessibility',
+      };
+      const categoryScores = Object.fromEntries(
+        Object.entries(categoryLabels).map(([category, label]) => [
+          label,
+          criterionEvaluation.scoreSummary.categoryScores[category as keyof typeof criterionEvaluation.scoreSummary.categoryScores]
+            ?? criterionEvaluation.scoreSummary.qualityScore
+            ?? 0,
+        ]),
+      );
+      const criterionById = new Map(criterionEvaluation.applicable.map((criterion) => [criterion.id, criterion]));
+      const good = criterionEvaluation.results.filter((result) => result.status === 'GOOD' && result.confidence >= 0.6).slice(0, 4);
+      const bad = criterionEvaluation.results.filter((result) => result.status === 'BAD' && result.confidence >= 0.6).slice(0, 8);
+      return {
+        index,
+        url,
+        totalScore: criterionEvaluation.scoreSummary.overallScore ?? 0,
+        categoryScores,
+        rulePenalties: bad.map((result) => ({
+          rule: `${criterionById.get(result.criterionId)?.title ?? 'Best-practice check'}: ${result.explanation}`,
+          penalty: -1,
+        })),
+        topDrivers: good.map((result) => `${criterionById.get(result.criterionId)?.title ?? 'Best-practice check'}: ${result.explanation}`),
+        features,
+        criterionResults: criterionEvaluation.results,
+      };
+    }
+
     // Pipeline: fetch -> extract -> optional AI CTA assist -> score -> rankable result.
     const fetchResult = await fetchPageHtml(url);
     const extracted = fetchResult.ok
@@ -720,7 +762,23 @@ export async function createEvaluation(input: CreateEvaluationInput) {
   const goalKey = scoringGoalKey;
   const start = Date.now();
 
-  const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey, goalAssist)));
+  const activeVersion = await prisma.libraryVersion.findFirst({
+    where: { isActive: true, status: 'PUBLISHED' },
+    orderBy: { publishedAt: 'desc' },
+    include: { criteria: { include: { categoryMappings: true } } },
+  });
+  const activeCriteria: ActiveCriterion[] = activeVersion?.criteria.map((criterion) => ({
+    id: criterion.id,
+    title: criterion.title,
+    description: criterion.description,
+    rationale: criterion.rationale,
+    pageAreas: criterion.pageAreas,
+    importanceWeight: criterion.importanceWeight,
+    defaultMethod: criterion.defaultMethod,
+    categoryMappings: criterion.categoryMappings,
+  })) ?? [];
+
+  const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey, goalAssist, activeCriteria)));
 
   // Rank after all variants are scored so persistence does not depend on request order.
   const ranked = [...variantData].sort((a, b) => b.totalScore - a.totalScore);
@@ -743,10 +801,24 @@ export async function createEvaluation(input: CreateEvaluationInput) {
           rulePenalties: variant.rulePenalties as unknown as Prisma.InputJsonValue,
           topDrivers: variant.topDrivers as unknown as Prisma.InputJsonValue,
           features: variant.features as Prisma.InputJsonValue,
+          ...(variant.criterionResults ? {
+            criterionResults: {
+              create: variant.criterionResults.map((result) => ({
+                criterionId: result.criterionId,
+                status: result.status,
+                method: result.method,
+                evidence: result.evidence,
+                explanation: result.explanation,
+                confidence: result.confidence,
+                scoreImpact: result.scoreImpact,
+                evaluatorVersion: 'cake-playwright-v1',
+              })),
+            },
+          } : {}),
         })),
       },
     },
-    include: { variants: true },
+    include: { variants: { include: { criterionResults: { include: { criterion: true } } } } },
   });
 
   return evaluation;
@@ -777,7 +849,12 @@ export async function listEvaluations() {
 export async function getEvaluation(id: string) {
   const evaluation = await prisma.evaluation.findUnique({
     where: { id },
-    include: { variants: { orderBy: { rank: 'asc' } } },
+    include: {
+      variants: {
+        orderBy: { rank: 'asc' },
+        include: { criterionResults: { include: { criterion: true }, orderBy: { createdAt: 'asc' } } },
+      },
+    },
   });
 
   return evaluation ?? null;

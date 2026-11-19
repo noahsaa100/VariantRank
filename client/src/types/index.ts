@@ -14,6 +14,23 @@ export interface RulePenalty {
 
 export type Features = Record<string, unknown>;
 
+export type CriterionStatus = 'GOOD' | 'CAN_BE_IMPROVED' | 'BAD' | 'NOT_RELEVANT' | 'NEEDS_REVIEW' | 'NOT_OBSERVED';
+
+export interface CriterionResult {
+  id: string;
+  criterionId: string;
+  status: CriterionStatus;
+  method: 'AUTOMATED' | 'AI_ASSISTED' | 'MANUAL';
+  evidence: { summary?: string; pageType?: string } | null;
+  explanation: string | null;
+  confidence: number | null;
+  criterion: {
+    title: string;
+    description: string;
+    pageAreas: string[];
+  };
+}
+
 export interface Variant {
   id: string;
   evaluationId: string;
@@ -24,6 +41,7 @@ export interface Variant {
   rulePenalties: RulePenalty[];
   topDrivers: string[];
   features: Features;
+  criterionResults?: CriterionResult[];
 }
 
 export interface Evaluation {

@@ -18,14 +18,244 @@ model Evaluation {
 }
 
 model Variant {
-  id             String     @id @default(uuid())
-  evaluationId   String
-  url            String
-  rank           Int
-  totalScore     Float
-  categoryScores Json
-  rulePenalties  Json
-  topDrivers     Json
-  features       Json
-  evaluation     Evaluation @relation(fields: [evaluationId], references: [id])
+  id               String                      @id @default(uuid())
+  evaluationId     String
+  url              String
+  rank             Int
+  totalScore       Float
+  categoryScores   Json
+  rulePenalties    Json
+  topDrivers       Json
+  features         Json
+  evaluation       Evaluation                  @relation(fields: [evaluationId], references: [id])
+  criterionResults CriterionEvaluationResult[]
+}
+
+enum LibraryVersionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ImportJobStatus {
+  PENDING
+  PARSING
+  NEEDS_REVIEW
+  PUBLISHED
+  FAILED
+}
+
+enum ImportCandidateStatus {
+  PROPOSED
+  APPROVED
+  REJECTED
+  MERGED
+}
+
+enum CriterionEvaluationStatus {
+  GOOD
+  CAN_BE_IMPROVED
+  BAD
+  NOT_RELEVANT
+  NEEDS_REVIEW
+  NOT_OBSERVED
+}
+
+enum CriterionEvaluationMethod {
+  AUTOMATED
+  AI_ASSISTED
+  MANUAL
+  HYBRID
+}
+
+enum ScoreCategoryKey {
+  SHOPPING_UX
+  TRUST_CONFIDENCE
+  OFFER_CLARITY
+  PURCHASE_EASE
+  TECHNICAL_ACCESSIBILITY
+}
+
+enum BusinessOutcomeKey {
+  INCREASE_ATC
+  INCREASE_PRODUCT_VIEWS
+  INCREASE_CONVERSION
+  INCREASE_AOV
+  ENHANCE_BRAND_PERCEPTION
+  DECREASE_SITE_ABANDONMENT
+  WEB_ACCESSIBILITY
+  THANK_YOU_PAGE
+}
+
+/// A tenant-ready collection of best practices, such as the Cake Ecommerce Scorecard.
+model BestPracticeLibrary {
+  id             String           @id @default(uuid())
+  name           String
+  slug           String           @unique
+  description    String?
+  organisationId String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  versions       LibraryVersion[]
+  importJobs     ImportJob[]
+}
+
+/// An immutable scoring-library snapshot once published.
+model LibraryVersion {
+  id          String               @id @default(uuid())
+  libraryId   String
+  version     Int
+  status      LibraryVersionStatus @default(DRAFT)
+  isActive    Boolean              @default(false)
+  notes       String?
+  publishedAt DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  library     BestPracticeLibrary  @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  criteria    Criterion[]
+  profiles    ScoringProfile[]
+  importJob   ImportJob?
+
+  @@unique([libraryId, version])
+  @@index([libraryId, status])
+  @@index([libraryId, isActive])
+}
+
+/// A canonical, deduplicated check. A criterion is evaluated once even when it
+/// supports several Cake metrics or VariantRank categories.
+model Criterion {
+  id                   String                      @id @default(uuid())
+  libraryVersionId     String
+  canonicalKey         String
+  title                String
+  description          String
+  rationale            String?
+  guidance             String?
+  pageAreas            String[]
+  applicability        Json?
+  evidenceRequirements Json?
+  defaultMethod        CriterionEvaluationMethod
+  importanceWeight     Float                       @default(1)
+  includedInCakeTheme  Boolean?
+  customWorkRequired   Boolean?
+  integrationRequired  Boolean?
+  clientResponsibility Boolean?
+  exampleUrl           String?
+  exampleAssetRef      String?
+  sourceReferences     Json
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  libraryVersion       LibraryVersion              @relation(fields: [libraryVersionId], references: [id], onDelete: Cascade)
+  categoryMappings     CriterionCategoryMapping[]
+  outcomeMappings      CriterionOutcomeMapping[]
+  results              CriterionEvaluationResult[]
+
+  @@unique([libraryVersionId, canonicalKey])
+  @@index([libraryVersionId])
+}
+
+model CriterionCategoryMapping {
+  id          String           @id @default(uuid())
+  criterionId String
+  category    ScoreCategoryKey
+  weight      Float            @default(1)
+  isPrimary   Boolean          @default(false)
+  criterion   Criterion        @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@unique([criterionId, category])
+  @@index([category])
+}
+
+model CriterionOutcomeMapping {
+  id          String             @id @default(uuid())
+  criterionId String
+  outcome     BusinessOutcomeKey
+  weight      Float              @default(1)
+  criterion   Criterion          @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@unique([criterionId, outcome])
+  @@index([outcome])
+}
+
+model ScoringProfile {
+  id                   String                  @id @default(uuid())
+  libraryVersionId     String
+  name                 String
+  description          String?
+  isDefault            Boolean                 @default(false)
+  qualityPartialCredit Float                   @default(0.5)
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  libraryVersion       LibraryVersion          @relation(fields: [libraryVersionId], references: [id], onDelete: Cascade)
+  categoryWeights      ScoringCategoryWeight[]
+
+  @@unique([libraryVersionId, name])
+}
+
+model ScoringCategoryWeight {
+  id               String           @id @default(uuid())
+  scoringProfileId String
+  category         ScoreCategoryKey
+  weight           Float
+  scoringProfile   ScoringProfile   @relation(fields: [scoringProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([scoringProfileId, category])
+}
+
+/// Per-site evidence and verdict. Raw diagnostics remain separate from this
+/// user-facing, auditable record.
+model CriterionEvaluationResult {
+  id               String                    @id @default(uuid())
+  variantId        String
+  criterionId      String
+  status           CriterionEvaluationStatus
+  method           CriterionEvaluationMethod
+  evidence         Json
+  explanation      String?
+  confidence       Float?
+  scoreImpact      Json?
+  evaluatorVersion String?
+  createdAt        DateTime                  @default(now())
+  variant          Variant                   @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  criterion        Criterion                 @relation(fields: [criterionId], references: [id])
+
+  @@unique([variantId, criterionId])
+  @@index([variantId, status])
+}
+
+/// Uploads are staged and reviewed before they can create a published version.
+model ImportJob {
+  id                 String              @id @default(uuid())
+  libraryId          String
+  fileName           String
+  mimeType           String?
+  checksum           String?
+  status             ImportJobStatus     @default(PENDING)
+  sourceMetadata     Json?
+  errorMessage       String?
+  publishedVersionId String?             @unique
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  library            BestPracticeLibrary @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  publishedVersion   LibraryVersion?     @relation(fields: [publishedVersionId], references: [id])
+  candidates         ImportCandidate[]
+}
+
+model ImportCandidate {
+  id                    String                @id @default(uuid())
+  importJobId           String
+  status                ImportCandidateStatus @default(PROPOSED)
+  sourceSheet           String?
+  sourceRow             Int?
+  rawData               Json
+  proposedCriterion     Json
+  suggestedCanonicalKey String?
+  duplicateCriterionId  String?
+  extractionConfidence  Float?
+  reviewNotes           String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  importJob             ImportJob             @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([importJobId, status])
 }

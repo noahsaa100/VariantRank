@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getEvaluation } from '../api/evaluations';
-import type { Evaluation, Variant } from '../types';
+import type { CriterionResult, CriterionStatus, Evaluation, Variant } from '../types';
 import { ScoreBar } from '../components/ScoreBar';
 import { Page, PageHeader } from '../components/Page';
 import pageStyles from '../components/Page.module.css';
@@ -18,6 +18,38 @@ function formatFeatureValue(value: unknown): string {
   }
 
   return JSON.stringify(value);
+}
+
+const STATUS_LABELS: Record<CriterionStatus, string> = {
+  GOOD: 'Good',
+  CAN_BE_IMPROVED: 'Can be improved',
+  BAD: 'Bad',
+  NOT_RELEVANT: 'Not relevant',
+  NEEDS_REVIEW: 'Needs review',
+  NOT_OBSERVED: 'Not observed',
+};
+
+function CriterionRow({ result }: { result: CriterionResult }) {
+  const evidence = result.evidence?.summary || result.explanation || 'No evidence was recorded.';
+  return (
+    <li className={styles.checkRow}>
+      <details className={styles.checkDetails}>
+      <summary className={styles.checkHeading}>
+        <div>
+          <strong className={styles.checkTitle}>{result.criterion.title}</strong>
+          <p className={styles.checkDescription}>{result.criterion.description}</p>
+        </div>
+        <span className={`${styles.status} ${styles[`status${result.status}`]}`}>{STATUS_LABELS[result.status]}</span>
+      </summary>
+      <p className={styles.evidence}>{evidence}</p>
+      <div className={styles.checkMeta}>
+        <span>{result.method.replace('_', ' ').toLowerCase()}</span>
+        {result.evidence?.pageType && <span>{result.evidence.pageType} page</span>}
+        {result.confidence !== null && <span>{Math.round(result.confidence * 100)}% confidence</span>}
+      </div>
+      </details>
+    </li>
+  );
 }
 
 export function VariantDetail() {
@@ -43,6 +75,9 @@ export function VariantDetail() {
   if (error || !variant || !evaluation) return <Page><p className={pageStyles.error}>{error ?? 'Not found'}</p></Page>;
 
   const features = variant.features as Record<string, unknown>;
+  const checks = (variant.criterionResults ?? []).filter(
+    (check) => check.status !== 'NEEDS_REVIEW' && check.status !== 'NOT_OBSERVED',
+  );
 
   return (
     <Page>
@@ -77,13 +112,30 @@ export function VariantDetail() {
         </Panel>
       )}
 
-      <Panel title="Features">
-        <ul className={styles.featureList}>
-          {Object.entries(features).map(([key, value]) => (
-            <li className={styles.feature} key={key}>{key}: <strong>{formatFeatureValue(value)}</strong></li>
-          ))}
-        </ul>
-      </Panel>
+      {checks.length > 0 ? (
+        <Panel title="Checks & evidence">
+          <details className={styles.checkDisclosure}>
+          <summary className={styles.disclosureSummary}>{checks.length} assessed checks — expand evidence</summary>
+          <div className={styles.checkSummary}>
+            {Object.entries(STATUS_LABELS).map(([status, label]) => {
+              const count = checks.filter((check) => check.status === status).length;
+              return count > 0 ? <span key={status}><strong>{count}</strong> {label}</span> : null;
+            })}
+          </div>
+          <ul className={styles.checkList}>
+            {checks.map((result) => <CriterionRow key={result.id} result={result} />)}
+          </ul>
+          </details>
+        </Panel>
+      ) : (
+        <Panel title="Features">
+          <ul className={styles.featureList}>
+            {Object.entries(features).map(([key, value]) => (
+              <li className={styles.feature} key={key}>{key}: <strong>{formatFeatureValue(value)}</strong></li>
+            ))}
+          </ul>
+        </Panel>
+      )}
     </Page>
   );
 }
