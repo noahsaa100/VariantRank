@@ -5,7 +5,6 @@ import { Results } from './pages/Results';
 import { VariantDetail } from './pages/VariantDetail';
 import { History } from './pages/History';
 import { Compare } from './pages/Compare';
-import './index.css';
 
 function App() {
   return (

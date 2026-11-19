@@ -1,0 +1,46 @@
+.effect {
+  --specular-x: 18%;
+  --specular-y: 0%;
+  --specular-intensity: 0.22;
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  opacity: var(--specular-intensity);
+  pointer-events: none;
+}
+
+.effect::before,
+.effect::after {
+  position: absolute;
+  content: '';
+  pointer-events: none;
+}
+
+.effect::before {
+  inset: 0;
+  padding: 1.25px;
+  border-radius: inherit;
+  background: radial-gradient(5.75rem circle at var(--specular-x) var(--specular-y), rgb(255 255 255 / 92%) 0, rgb(255 255 255 / 34%) 38%, rgb(255 255 255 / 8%) 72%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.effect::after {
+  width: 8rem;
+  height: 8rem;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 13%);
+  filter: blur(1.4rem);
+  transform: translate(calc(var(--specular-x) - 50%), calc(var(--specular-y) - 50%));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .effect {
+    display: none;
+  }
+}
+

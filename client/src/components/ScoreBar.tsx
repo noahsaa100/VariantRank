@@ -1,7 +1,10 @@
+import styles from './ScoreBar.module.css';
+
 interface ScoreBarProps {
   label: string;
   score: number;
   max?: number;
+  tone?: 'dark' | 'light';
 }
 
 function getTone(score: number, max: number): 'good' | 'warn' | 'bad' {
@@ -11,18 +14,18 @@ function getTone(score: number, max: number): 'good' | 'warn' | 'bad' {
   return 'bad';
 }
 
-export function ScoreBar({ label, score, max = 100 }: ScoreBarProps) {
+export function ScoreBar({ label, score, max = 100, tone: surfaceTone = 'dark' }: ScoreBarProps) {
   const safeScore = Math.max(0, Math.min(score, max));
   const tone = getTone(safeScore, max);
 
   return (
-    <div className="score-bar">
-      <div className="score-bar__header">
-        <span className="score-bar__label">{label}</span>
-        <span className="score-bar__value">{safeScore.toFixed(1)}</span>
+    <div className={`${styles.scoreBar} ${surfaceTone === 'light' ? styles.light : ''}`}>
+      <div className={styles.header}>
+        <span className={styles.label}>{label}</span>
+        <span className={styles.value}>{safeScore.toFixed(1)}</span>
       </div>
       <progress
-        className={`score-bar__progress score-bar__progress--${tone}`}
+        className={`${styles.progress} ${styles[tone]}`}
         max={max}
         value={safeScore}
       />

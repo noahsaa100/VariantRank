@@ -1,4 +1,5 @@
 import type { Variant } from '../types';
+import styles from './ComparisonSummary.module.css';
 
 interface ComparisonSummaryProps {
   variants: Variant[];
@@ -94,7 +95,7 @@ export function ComparisonSummary({ variants }: ComparisonSummaryProps) {
       : ' No major rule-based risks were identified.';
 
     return (
-      <section className="comparison-summary" aria-labelledby="comparison-summary-title">
+      <section className={styles.summary} aria-labelledby="comparison-summary-title">
         <h3 id="comparison-summary-title">Performance summary</h3>
         <p>
           This page scored {winner.totalScore.toFixed(1)}, performing strongest in {formatList(strongestCategories)}.
@@ -160,7 +161,7 @@ export function ComparisonSummary({ variants }: ComparisonSummaryProps) {
     : '';
 
   return (
-    <section className="comparison-summary" aria-labelledby="comparison-summary-title">
+    <section className={styles.summary} aria-labelledby="comparison-summary-title">
       <h3 id="comparison-summary-title">Why this ranked higher</h3>
       <p>
         Variant #{winner.rank} ranked first by {margin.toFixed(1)} points. {leadReason}{evidenceReason}.

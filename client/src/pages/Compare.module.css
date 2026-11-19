@@ -1,0 +1,83 @@
+.controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.select {
+  min-width: 0;
+  border: var(--border-width) solid var(--cake-black);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem 0.9rem;
+  background: var(--cake-white);
+  font-size: 0.88rem;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.cardContent {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cardContent p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.table {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  overflow: hidden;
+  border: var(--border-width) solid var(--cake-black);
+  border-radius: var(--radius-sm);
+}
+
+.tableHeader {
+  border-bottom: var(--border-width) solid var(--cake-black);
+  padding: var(--space-3) var(--space-4);
+  background: var(--cake-black);
+  color: var(--cake-chalk);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.tableRow {
+  display: contents;
+}
+
+.tableRow span {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.category {
+  color: var(--color-muted);
+}
+
+@media (max-width: 48rem) {
+  .controls,
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+

@@ -1,0 +1,70 @@
+.scoreBar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--color-inverse-muted);
+  font-size: 0.78rem;
+}
+
+.label {
+  font-weight: 500;
+}
+
+.value {
+  color: var(--cake-chalk);
+  font-weight: 700;
+}
+
+.progress {
+  width: 100%;
+  height: 0.5rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(248 247 242 / 14%);
+}
+
+.progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: rgb(248 247 242 / 14%);
+}
+
+.progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.warn::-webkit-progress-value,
+.warn::-moz-progress-bar {
+  opacity: 0.72;
+}
+
+.bad::-webkit-progress-value,
+.bad::-moz-progress-bar {
+  opacity: 0.42;
+}
+
+.light .header {
+  color: var(--color-muted);
+}
+
+.light .value {
+  color: var(--cake-black);
+}
+
+.light .progress,
+.light .progress::-webkit-progress-bar {
+  background: rgb(0 0 0 / 12%);
+}
+

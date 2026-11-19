@@ -1,6 +1,8 @@
 import type { Variant } from '../types';
 import { ScoreBar } from './ScoreBar';
 import { useNavigate } from 'react-router-dom';
+import { Button } from './Button';
+import styles from './VariantCard.module.css';
 
 interface VariantCardProps {
   variant: Variant;
@@ -11,21 +13,21 @@ export function VariantCard({ variant, evaluationId }: VariantCardProps) {
   const navigate = useNavigate();
 
   return (
-    <div className="variant-card">
-      <div className="variant-card__header">
-        <span className="variant-card__rank">#{variant.rank}</span>
-        <a href={variant.url} target="_blank" rel="noopener noreferrer" className="variant-card__url">
+    <article className={styles.card}>
+      <div className={styles.header}>
+        <span className={styles.rank}>#{variant.rank}</span>
+        <a href={variant.url} target="_blank" rel="noopener noreferrer" className={styles.url}>
           {variant.url}
         </a>
-        <span className="variant-card__score">{variant.totalScore.toFixed(1)}</span>
+        <span className={styles.score}>{variant.totalScore.toFixed(1)}</span>
       </div>
-      <div className="variant-card__scores">
+      <div className={styles.scores}>
         {Object.entries(variant.categoryScores).map(([key, val]) => (
           <ScoreBar key={key} label={key} score={val} />
         ))}
       </div>
       {variant.topDrivers.length > 0 && (
-        <div className="variant-card__drivers">
+        <div className={styles.drivers}>
           <h4>Top Drivers</h4>
           <ul>
             {variant.topDrivers.map((d) => (
@@ -34,12 +36,13 @@ export function VariantCard({ variant, evaluationId }: VariantCardProps) {
           </ul>
         </div>
       )}
-      <button
-        className="btn btn--secondary"
+      <Button
+        className={styles.action}
+        variant="primary"
         onClick={() => navigate(`/results/${evaluationId}/variant/${variant.id}`)}
       >
         View Details
-      </button>
-    </div>
+      </Button>
+    </article>
   );
 }

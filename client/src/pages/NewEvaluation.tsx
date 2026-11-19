@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createEvaluation } from '../api/evaluations';
 import { getOrCreateSessionId } from '../utils/session';
+import { Button } from '../components/Button';
+import { Page, PageHeader } from '../components/Page';
+import pageStyles from '../components/Page.module.css';
+import styles from './NewEvaluation.module.css';
 
 const GOALS = [
   'Lead generation',
@@ -51,39 +55,51 @@ export function NewEvaluation() {
   }
 
   return (
-    <div className="page">
-      <h2 className="page-title">New Evaluation</h2>
-      <form className="eval-form" onSubmit={handleSubmit}>
-        <label htmlFor="urls">URLs (one per line)</label>
-        <textarea
-          id="urls"
-          rows={6}
-          placeholder="https://example.com&#10;https://another.com"
-          value={urlsText}
-          onChange={(e) => setUrlsText(e.target.value)}
-        />
+    <Page>
+      <PageHeader
+        eyebrow="Decision support"
+        title="Run an evaluation"
+        description="Compare pages against the same conversion goal and surface the evidence behind every score."
+      />
+      <form className={styles.form} onSubmit={handleSubmit}>
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="urls">URLs (one per line)</label>
+          <textarea
+            className={styles.control}
+            id="urls"
+            rows={6}
+            placeholder="https://example.com&#10;https://another.com"
+            value={urlsText}
+            onChange={(e) => setUrlsText(e.target.value)}
+          />
+        </div>
 
-        <label htmlFor="goal">Goal</label>
-        <select id="goal" value={goal} onChange={(e) => setGoal(e.target.value)}>
-          {GOALS.map((g) => (
-            <option key={g} value={g}>{g}</option>
-          ))}
-        </select>
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="goal">Goal</label>
+          <select className={styles.control} id="goal" value={goal} onChange={(e) => setGoal(e.target.value)}>
+            {GOALS.map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+        </div>
 
-        <label htmlFor="goalDescription">Goal Description (optional)</label>
-        <textarea
-          id="goalDescription"
-          rows={3}
-          placeholder="Describe your conversion objective in your own words..."
-          value={goalDescription}
-          onChange={(e) => setGoalDescription(e.target.value)}
-        />
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="goalDescription">Goal Description (optional)</label>
+          <textarea
+            className={styles.control}
+            id="goalDescription"
+            rows={3}
+            placeholder="Describe your conversion objective in your own words..."
+            value={goalDescription}
+            onChange={(e) => setGoalDescription(e.target.value)}
+          />
+        </div>
 
-        {error && <p className="error">{error}</p>}
-        <button className="btn btn--primary" type="submit" disabled={loading}>
+        {error && <p className={pageStyles.error}>{error}</p>}
+        <Button className={styles.submit} type="submit" disabled={loading}>
           {loading ? 'Running...' : 'Run Evaluation'}
-        </button>
+        </Button>
       </form>
-    </div>
+    </Page>
   );
 }

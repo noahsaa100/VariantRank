@@ -4,6 +4,9 @@ import { getEvaluation } from '../api/evaluations';
 import type { Evaluation } from '../types';
 import { VariantCard } from '../components/VariantCard';
 import { ComparisonSummary } from '../components/ComparisonSummary';
+import { Page, PageHeader } from '../components/Page';
+import pageStyles from '../components/Page.module.css';
+import styles from './Results.module.css';
 
 export function Results() {
   const { id } = useParams<{ id: string }>();
@@ -19,29 +22,27 @@ export function Results() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  if (loading) return <div className="page"><p>Loading...</p></div>;
-  if (error || !evaluation) return <div className="page"><p className="error">{error ?? 'Not found'}</p></div>;
+  if (loading) return <Page><p>Loading...</p></Page>;
+  if (error || !evaluation) return <Page><p className={pageStyles.error}>{error ?? 'Not found'}</p></Page>;
 
   const sorted = [...evaluation.variants].sort((a, b) => a.rank - b.rank);
 
   return (
-    <div className="page">
-      <div className="page-actions">
-        <Link to="/" className="back-link">Back to New Evaluation</Link>
-        <Link to={`/compare?left=${evaluation.id}`} className="back-link">Compare</Link>
-      </div>
+    <Page>
+      <Link to="/" className={pageStyles.backLink}>Back to New Evaluation</Link>
+      <PageHeader
+        eyebrow="Evaluation complete"
+        title="Results"
+        description={<>Goal: <strong>{evaluation.goal}</strong> · {evaluation.variants.length} variants · {evaluation.processingTime}ms</>}
+        actions={<div className={styles.headerActions}><Link to={`/compare?left=${evaluation.id}`}>Compare evaluations ↗</Link></div>}
+      />
 
-      <h2 className="page-title">Results</h2>
-      <p className="meta">
-        Goal: <strong>{evaluation.goal}</strong> | {evaluation.variants.length} variants | {evaluation.processingTime}ms
-      </p>
-
-      <div className="variant-list">
+      <div className={styles.variantList}>
         {sorted.map((variant) => (
           <VariantCard key={variant.id} variant={variant} evaluationId={evaluation.id} />
         ))}
       </div>
       <ComparisonSummary variants={sorted} />
-    </div>
+    </Page>
   );
 }

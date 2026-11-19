@@ -1,4 +1,6 @@
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { ButtonLink } from './Button';
+import styles from './DashboardLayout.module.css';
 
 const NAV_ITEMS = [
   { to: '/', label: 'New Evaluation' },
@@ -18,36 +20,37 @@ export function DashboardLayout() {
   const location = useLocation();
 
   return (
-    <div className="dashboard-shell">
-      <aside className="dashboard-sidebar">
-        <Link to="/" className="dashboard-sidebar__brand">VariantRank</Link>
-        <p className="dashboard-sidebar__subtitle">Decision Support</p>
-        <nav className="dashboard-sidebar__nav" aria-label="Primary">
+    <div className={styles.shell}>
+      <aside className={styles.sidebar}>
+        <Link to="/" className={styles.brand}>VariantRank</Link>
+        <p className={styles.subtitle}>Decision Support</p>
+        <nav className={styles.nav} aria-label="Primary">
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) =>
-                isActive ? 'dashboard-sidebar__link dashboard-sidebar__link--active' : 'dashboard-sidebar__link'
+                `${styles.navLink} ${isActive ? styles.navLinkActive : ''}`
               }
             >
               {item.label}
             </NavLink>
           ))}
         </nav>
+        <p className={styles.sidebarNote}>Evidence-led ecommerce evaluation.</p>
       </aside>
 
-      <div className="dashboard-main">
-        <header className="dashboard-topbar">
+      <div className={styles.main}>
+        <header className={styles.topbar}>
           <div>
-            <p className="dashboard-topbar__eyebrow">Workspace</p>
-            <h1 className="dashboard-topbar__title">{getPageTitle(location.pathname)}</h1>
+            <p className={styles.topbarEyebrow}>Workspace</p>
+            <h1 className={styles.topbarTitle}>{getPageTitle(location.pathname)}</h1>
           </div>
-          <Link to="/" className="btn btn--primary">Run Evaluation</Link>
+          <ButtonLink to="/">Run Evaluation</ButtonLink>
         </header>
 
-        <main className="dashboard-content">
+        <main className={styles.content}>
           <Outlet />
         </main>
       </div>

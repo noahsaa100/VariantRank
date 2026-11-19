@@ -1,0 +1,28 @@
+.panel {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+  padding: clamp(1rem, 2.2vw, 1.5rem);
+}
+
+.dark {
+  border-color: rgb(248 247 242 / 15%);
+  background: var(--cake-black);
+  color: var(--cake-chalk);
+}
+
+.orange {
+  border-color: var(--cake-black);
+  background: var(--color-accent);
+  color: var(--cake-black);
+}
+
+.heading {
+  margin: 0 0 var(--space-4);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+

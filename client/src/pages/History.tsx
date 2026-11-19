@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { deleteAllEvaluations, deleteEvaluation, listEvaluations } from '../api/evaluations';
 import type { EvaluationSummary } from '../types';
+import { Button, ButtonLink } from '../components/Button';
+import { Page, PageHeader } from '../components/Page';
+import pageStyles from '../components/Page.module.css';
+import styles from './History.module.css';
 
 export function History() {
   const [history, setHistory] = useState<EvaluationSummary[]>([]);
@@ -52,52 +56,56 @@ export function History() {
     }
   }
 
-  if (loading) return <div className="page"><p>Loading...</p></div>;
-  if (error) return <div className="page"><p className="error">{error}</p></div>;
+  if (loading) return <Page><p>Loading...</p></Page>;
+  if (error) return <Page><p className={pageStyles.error}>{error}</p></Page>;
 
   return (
-    <div className="page">
-      <div className="page-actions">
-        <h2 className="page-title">Evaluation History</h2>
-        <div className="history-toolbar">
-          <Link to="/compare" className="btn btn--secondary">Open Compare</Link>
-          <button
+    <Page>
+      <PageHeader
+        eyebrow="Archive"
+        title="Evaluation history"
+        description={`${history.length} saved evaluation${history.length === 1 ? '' : 's'}`}
+        actions={
+        <div className={styles.toolbar}>
+          <ButtonLink to="/compare" variant="secondary">Open Compare</ButtonLink>
+          <Button
             type="button"
-            className="btn btn--danger"
+            variant="danger"
             onClick={handleDeleteAll}
             disabled={clearingAll || history.length === 0}
           >
             {clearingAll ? 'Deleting...' : 'Delete All'}
-          </button>
-        </div>
-      </div>
+          </Button>
+        </div>}
+      />
 
-      {actionError && <p className="error">{actionError}</p>}
+      {actionError && <p className={pageStyles.error}>{actionError}</p>}
 
       {history.length === 0 && <p>No evaluations yet. <Link to="/">Run one.</Link></p>}
 
-      <ul className="history-list">
+      <ul className={styles.list}>
         {history.map((evaluation) => (
-          <li key={evaluation.id} className="history-item">
-            <Link to={`/results/${evaluation.id}`} className="history-item__link">
-              <span className="history-item__goal">{evaluation.goal}</span>
-              <span className="history-item__url">{evaluation.topUrl ?? '-'}</span>
-              <span className="history-item__score">Top: {evaluation.topScore?.toFixed(1) ?? '-'}</span>
-              <span className="history-item__date">{new Date(evaluation.createdAt).toLocaleString()}</span>
+          <li key={evaluation.id} className={styles.item}>
+            <Link to={`/results/${evaluation.id}`} className={styles.itemLink}>
+              <span className={styles.goal}>{evaluation.goal}</span>
+              <span className={styles.url}>{evaluation.topUrl ?? '-'}</span>
+              <span className={styles.score}>Top: {evaluation.topScore?.toFixed(1) ?? '-'}</span>
+              <span className={styles.date}>{new Date(evaluation.createdAt).toLocaleString()}</span>
             </Link>
-            <div className="history-item__actions">
-              <button
+            <div className={styles.actions}>
+              <Button
                 type="button"
-                className="btn btn--danger btn--small"
+                variant="danger"
+                size="small"
                 onClick={() => handleDeleteOne(evaluation.id)}
                 disabled={deletingId === evaluation.id || clearingAll}
               >
                 {deletingId === evaluation.id ? 'Deleting...' : 'Delete'}
-              </button>
+              </Button>
             </div>
           </li>
         ))}
       </ul>
-    </div>
+    </Page>
   );
 }

@@ -3,6 +3,10 @@ import { Link, useParams } from 'react-router-dom';
 import { getEvaluation } from '../api/evaluations';
 import type { Evaluation, Variant } from '../types';
 import { ScoreBar } from '../components/ScoreBar';
+import { Page, PageHeader } from '../components/Page';
+import pageStyles from '../components/Page.module.css';
+import { Panel } from '../components/Panel';
+import styles from './VariantDetail.module.css';
 
 function formatFeatureValue(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -35,54 +39,51 @@ export function VariantDetail() {
       .finally(() => setLoading(false));
   }, [id, variantId]);
 
-  if (loading) return <div className="page"><p>Loading...</p></div>;
-  if (error || !variant || !evaluation) return <div className="page"><p className="error">{error ?? 'Not found'}</p></div>;
+  if (loading) return <Page><p>Loading...</p></Page>;
+  if (error || !variant || !evaluation) return <Page><p className={pageStyles.error}>{error ?? 'Not found'}</p></Page>;
 
   const features = variant.features as Record<string, unknown>;
 
   return (
-    <div className="page">
-      <Link to={`/results/${evaluation.id}`} className="back-link">Back to Results</Link>
+    <Page>
+      <Link to={`/results/${evaluation.id}`} className={pageStyles.backLink}>Back to Results</Link>
+      <PageHeader
+        eyebrow={`Rank #${variant.rank}`}
+        title="Variant detail"
+        description={<><a href={variant.url} target="_blank" rel="noopener noreferrer">{variant.url}</a> · Score {variant.totalScore.toFixed(1)}</>}
+      />
 
-      <h2 className="page-title">Variant Detail</h2>
-      <p className="meta">
-        <a href={variant.url} target="_blank" rel="noopener noreferrer">{variant.url}</a>
-        {' | '}Rank #{variant.rank} | Score {variant.totalScore.toFixed(1)}
-      </p>
+      <Panel title="Category Scores" tone="dark">
+        <div className={styles.stack}>
+          {Object.entries(variant.categoryScores).map(([key, value]) => (
+            <ScoreBar key={key} label={key} score={value} />
+          ))}
+        </div>
+      </Panel>
 
-      <section className="detail-section">
-        <h3>Category Scores</h3>
-        {Object.entries(variant.categoryScores).map(([key, value]) => (
-          <ScoreBar key={key} label={key} score={value} />
-        ))}
-      </section>
-
-      <section className="detail-section">
-        <h3>Top Drivers</h3>
-        <ul>
-          {variant.topDrivers.map((driver) => <li key={driver}>{driver}</li>)}
+      <Panel title="Top Drivers">
+        <ul className={styles.list}>
+          {variant.topDrivers.map((driver) => <li className={styles.listItem} key={driver}>{driver}</li>)}
         </ul>
-      </section>
+      </Panel>
 
       {variant.rulePenalties.length > 0 && (
-        <section className="detail-section">
-          <h3>Rule Penalties</h3>
-          <ul>
+        <Panel title="Rule Penalties">
+          <ul className={styles.list}>
             {variant.rulePenalties.map((penalty) => (
-              <li key={penalty.rule}>{penalty.rule}: <strong>{penalty.penalty}</strong></li>
+              <li className={styles.listItem} key={penalty.rule}>{penalty.rule}: <strong>{penalty.penalty}</strong></li>
             ))}
           </ul>
-        </section>
+        </Panel>
       )}
 
-      <section className="detail-section">
-        <h3>Features</h3>
-        <ul>
+      <Panel title="Features">
+        <ul className={styles.featureList}>
           {Object.entries(features).map(([key, value]) => (
-            <li key={key}>{key}: <strong>{formatFeatureValue(value)}</strong></li>
+            <li className={styles.feature} key={key}>{key}: <strong>{formatFeatureValue(value)}</strong></li>
           ))}
         </ul>
-      </section>
-    </div>
+      </Panel>
+    </Page>
   );
 }
