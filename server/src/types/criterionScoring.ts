@@ -20,6 +20,7 @@ export interface ScoredCriterionResult {
   criterionId: string;
   status: CriterionStatus;
   importanceWeight: number;
+  confidence?: number;
   categoryMappings: Array<{
     category: ScoreCategory;
     weight: number;

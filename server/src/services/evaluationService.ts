@@ -10,7 +10,7 @@ import {
 import { GOAL_WEIGHT_MATRICES } from '../config/goalWeightMatrices';
 import { GOAL_LABELS, type GoalKey } from '../config/goals';
 import type { CtaClassificationAssist, EcommerceAnalysisAssist, GoalMappingAssist } from '../types/aiAssist';
-import { analyzeEcommercePageWithAi, classifyPrimaryCtaWithAi } from './aiAssistService';
+import { analyzeEcommercePageWithAi, analyzeVisualPageWithAi, classifyPrimaryCtaWithAi } from './aiAssistService';
 import {
   createFallbackFeatures,
   analyzeCtaText,
@@ -665,8 +665,23 @@ async function analyzeVariant(
     if (activeCriteria.length > 0) {
       const rendered = await collectRenderedPage(url);
       const extracted = extractFeaturesFromHtml(rendered.html, rendered.finalUrl);
-      const features = withAssistMetadata(extracted, goalAssist, null);
-      const criterionEvaluation = await evaluateCriteriaForPage(activeCriteria, rendered);
+      const inventoryCaptures = (rendered.desktop.visualCaptures ?? [])
+        .filter((capture) => capture.label.startsWith('page segment') || ['purchase area', 'payment and trust area', 'footer'].includes(capture.label))
+        .slice(0, 4);
+      const visualInventory = await analyzeVisualPageWithAi({
+        pageType: rendered.pageType,
+        visibleText: `${rendered.desktop.visibleText}\nMOBILE:\n${rendered.mobile.visibleText}`,
+        controls: [...rendered.desktop.controls, ...rendered.mobile.controls],
+        signals: { desktop: rendered.desktop.signals, mobile: rendered.mobile.signals },
+        desktopScreenshotBase64: rendered.desktop.screenshotBase64,
+        mobileScreenshotBase64: rendered.mobile.screenshotBase64,
+        visualCaptures: inventoryCaptures,
+      });
+      const features = {
+        ...withAssistMetadata(extracted, goalAssist, null),
+        visualInventory,
+      };
+      const criterionEvaluation = await evaluateCriteriaForPage(activeCriteria, rendered, visualInventory);
       const categoryLabels: Record<string, string> = {
         SHOPPING_UX: 'Shopping UX',
         TRUST_CONFIDENCE: 'Trust & confidence',
@@ -692,7 +707,7 @@ async function analyzeVariant(
         categoryScores,
         rulePenalties: bad.map((result) => ({
           rule: `${criterionById.get(result.criterionId)?.title ?? 'Best-practice check'}: ${result.explanation}`,
-          penalty: -1,
+          penalty: -(result.scoreImpact.penaltyPoints ?? 0),
         })),
         topDrivers: good.map((result) => `${criterionById.get(result.criterionId)?.title ?? 'Best-practice check'}: ${result.explanation}`),
         features,

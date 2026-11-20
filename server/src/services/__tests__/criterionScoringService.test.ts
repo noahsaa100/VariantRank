@@ -70,4 +70,15 @@ describe('criterionScoringService', () => {
       result('same', 'BAD', 'TRUST_CONFIDENCE'),
     ])).toThrow('Duplicate criterion result: same');
   });
+
+  it('dampens uncertain verdicts and excludes confidence below the reliability floor', () => {
+    const uncertainBad = { ...result('uncertain', 'BAD', 'TRUST_CONFIDENCE'), confidence: 0.7 };
+    const unreliableBad = { ...result('unreliable', 'BAD', 'OFFER_CLARITY'), confidence: 0.55 };
+    const summary = calculateCriterionScores([uncertainBad, unreliableBad]);
+
+    expect(summary.categoryScores.TRUST_CONFIDENCE).toBe(25);
+    expect(summary.categoryScores.OFFER_CLARITY).toBeUndefined();
+    expect(summary.coverage.assessed).toBe(1);
+    expect(summary.coverage.notObserved).toBe(1);
+  });
 });

@@ -140,33 +140,118 @@ export interface AiCriterionVerdict {
   confidence: number;
 }
 
+export interface VisualPageInventory {
+  pageType: string;
+  pageSummary: string;
+  sections: string[];
+  primaryCta: { text: string | null; location: string | null; prominence: string | null };
+  evidence: Record<string, string[]>;
+  visualIssues: string[];
+  confidence: number;
+}
+
+function stringArray(value: unknown, limit = 12): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string').map((item) => item.slice(0, 240)).slice(0, limit)
+    : [];
+}
+
+export async function analyzeVisualPageWithAi(input: {
+  pageType: string;
+  visibleText: string;
+  controls: unknown[];
+  signals: unknown;
+  desktopScreenshotBase64: string;
+  mobileScreenshotBase64: string;
+  visualCaptures?: Array<{ label: string; screenshotBase64: string }>;
+}): Promise<VisualPageInventory | null> {
+  const systemPrompt = `
+Create a reusable visual inventory of an ecommerce page from Playwright evidence and screenshots. Record only observable facts. Do not score criteria and do not invent missing content. Return compact JSON only:
+{"pageType":"product|collection|cart|checkout|homepage|other","pageSummary":"...","sections":["..."],"primaryCta":{"text":null,"location":null,"prominence":null},"evidence":{"offers":[],"trust":[],"payments":[],"reviews":[],"delivery":[],"returns":[],"guarantees":[],"stock":[],"subscriptions":[],"sizeGuidance":[],"productOptions":[],"navigation":[],"popups":[],"footer":[],"accessibility":[]},"visualIssues":[],"confidence":0-1}
+Use short, specific evidence strings and include placement when visible.
+`;
+  const content: AnthropicUserContent = [
+    { type: 'text', text: JSON.stringify({
+      pageType: input.pageType,
+      visibleText: input.visibleText.slice(0, 26000),
+      controls: input.controls.slice(0, 140),
+      signals: input.signals,
+    }) },
+    { type: 'text', text: 'Desktop viewport:' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.desktopScreenshotBase64 } },
+    { type: 'text', text: 'Mobile viewport:' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.mobileScreenshotBase64 } },
+  ];
+  for (const capture of input.visualCaptures?.slice(0, 4) ?? []) {
+    content.push({ type: 'text', text: `${capture.label}:` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: capture.screenshotBase64 } });
+  }
+  const json = await requestAiJson(systemPrompt, content);
+  if (!json) return null;
+  const cta = json.primaryCta && typeof json.primaryCta === 'object' && !Array.isArray(json.primaryCta)
+    ? json.primaryCta as Record<string, unknown>
+    : {};
+  const rawEvidence = json.evidence && typeof json.evidence === 'object' && !Array.isArray(json.evidence)
+    ? json.evidence as Record<string, unknown>
+    : {};
+  const evidence = Object.fromEntries(Object.entries(rawEvidence).map(([key, value]) => [key, stringArray(value)]));
+  return {
+    pageType: typeof json.pageType === 'string' ? json.pageType : input.pageType,
+    pageSummary: typeof json.pageSummary === 'string' ? json.pageSummary.slice(0, 500) : '',
+    sections: stringArray(json.sections, 20),
+    primaryCta: {
+      text: toEvidence(cta.text),
+      location: toEvidence(cta.location),
+      prominence: toEvidence(cta.prominence),
+    },
+    evidence,
+    visualIssues: stringArray(json.visualIssues, 12),
+    confidence: toSafeConfidence(json.confidence, 0.5),
+  };
+}
+
 export async function evaluateCriteriaWithAi(input: {
   pageType: string;
   visibleText: string;
   controls: unknown[];
   headings: unknown[];
   criteria: AiCriterionInput[];
-  desktopScreenshotBase64: string;
-  mobileScreenshotBase64: string;
+  desktopScreenshotBase64?: string;
+  mobileScreenshotBase64?: string;
+  visualCaptures?: Array<{ label: string; screenshotBase64: string }>;
+  visualInventory?: VisualPageInventory | null;
 }): Promise<AiCriterionVerdict[]> {
   const systemPrompt = `
-You evaluate ecommerce best-practice checks using supplied rendered evidence and screenshots.
+You evaluate ecommerce best-practice checks using supplied Playwright evidence and a reusable visual inventory. Screenshots may also be supplied for targeted follow-up.
 Use only observable evidence. Do not invent. Return compact JSON only:
 {"results":[{"criterionId":"...","status":"GOOD|CAN_BE_IMPROVED|BAD|NOT_RELEVANT|NEEDS_REVIEW","evidence":"one specific sentence, maximum 180 characters","confidence":0-1}]}
 Return exactly one result per supplied criterion. Use NEEDS_REVIEW when the evidence cannot support a reliable verdict.
+For wording such as "where relevant" or "if offered", first establish relevance from evidence. Use NOT_RELEVANT rather than BAD when relevance is not established. Treat partial positive evidence as CAN_BE_IMPROVED, not BAD. Absence is BAD only when the relevant region or state was captured clearly enough to establish absence.
 `;
   const evidence = JSON.stringify({
     pageType: input.pageType,
-    visibleText: input.visibleText.slice(0, 22000),
-    controls: input.controls.slice(0, 120),
+    visibleText: input.visibleText.slice(0, input.visualInventory ? 8000 : 22000),
+    controls: input.controls.slice(0, input.visualInventory ? 70 : 120),
     headings: input.headings.slice(0, 60),
+    visualInventory: input.visualInventory,
     criteria: input.criteria,
   });
-  const json = await requestAiJson(systemPrompt, [
+  const content: AnthropicUserContent = [
     { type: 'text', text: evidence },
-    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.desktopScreenshotBase64 } },
-    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.mobileScreenshotBase64 } },
-  ]);
+  ];
+  if (input.desktopScreenshotBase64) {
+    content.push({ type: 'text', text: 'Desktop viewport:' });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.desktopScreenshotBase64 } });
+  }
+  if (input.mobileScreenshotBase64) {
+    content.push({ type: 'text', text: 'Mobile viewport:' });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.mobileScreenshotBase64 } });
+  }
+  for (const capture of input.visualCaptures?.slice(0, 4) ?? []) {
+    content.push({ type: 'text', text: `${capture.label}:` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: capture.screenshotBase64 } });
+  }
+  const json = await requestAiJson(systemPrompt, content);
   const allowed = new Set(['GOOD', 'CAN_BE_IMPROVED', 'BAD', 'NOT_RELEVANT', 'NEEDS_REVIEW']);
   if (!json || !Array.isArray(json.results)) return [];
   return json.results.flatMap((value) => {

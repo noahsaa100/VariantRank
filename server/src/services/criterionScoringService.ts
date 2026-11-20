@@ -19,6 +19,12 @@ function statusCredit(status: CriterionStatus, partialCredit: number): number | 
   return null;
 }
 
+function confidenceAdjustedCredit(credit: number, confidence: number): number {
+  if (confidence >= 0.8) return credit;
+  const strength = Math.max(0, Math.min(1, (confidence - 0.6) / 0.2));
+  return 0.5 + strength * (credit - 0.5);
+}
+
 function weightedAverage(
   entries: Array<{ credit: number; weight: number }>,
 ): number | null {
@@ -53,7 +59,9 @@ export function calculateCriterionScores(
   }
 
   const values = [...uniqueResults.values()];
-  const assessed = values.filter((result) => ASSESSED_STATUSES.includes(result.status));
+  const assessed = values.filter(
+    (result) => ASSESSED_STATUSES.includes(result.status) && (result.confidence ?? 1) >= 0.6,
+  );
   // Preserve Cake's current dashboard formula exactly: it is an unweighted
   // pass rate, while VariantRank quality below is the weighted predictive view.
   const goodCount = assessed.filter((result) => result.status === 'GOOD').length;
@@ -63,7 +71,7 @@ export function calculateCriterionScores(
 
   const qualityScore = weightedAverage(
     assessed.map((result) => ({
-      credit: statusCredit(result.status, partialCredit) ?? 0,
+      credit: confidenceAdjustedCredit(statusCredit(result.status, partialCredit) ?? 0, result.confidence ?? 1),
       weight: result.importanceWeight,
     })),
   );
@@ -74,7 +82,10 @@ export function calculateCriterionScores(
       const mapping = result.categoryMappings.find((item) => item.category === category);
       const credit = statusCredit(result.status, partialCredit);
       if (!mapping || credit === null) return [];
-      return [{ credit, weight: result.importanceWeight * mapping.weight }];
+      return [{
+        credit: confidenceAdjustedCredit(credit, result.confidence ?? 1),
+        weight: result.importanceWeight * mapping.weight,
+      }];
     });
     const score = weightedAverage(categoryEntries);
     if (score !== null) categoryScores[category] = score;
@@ -95,7 +106,10 @@ export function calculateCriterionScores(
       assessed: assessed.length,
       notRelevant: values.filter((result) => result.status === 'NOT_RELEVANT').length,
       needsReview: values.filter((result) => result.status === 'NEEDS_REVIEW').length,
-      notObserved: values.filter((result) => result.status === 'NOT_OBSERVED').length,
+      notObserved: values.filter(
+        (result) => result.status === 'NOT_OBSERVED'
+          || (ASSESSED_STATUSES.includes(result.status) && (result.confidence ?? 1) < 0.6),
+      ).length,
     },
   };
 }

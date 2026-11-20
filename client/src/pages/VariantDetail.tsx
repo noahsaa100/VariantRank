@@ -75,9 +75,11 @@ export function VariantDetail() {
   if (error || !variant || !evaluation) return <Page><p className={pageStyles.error}>{error ?? 'Not found'}</p></Page>;
 
   const features = variant.features as Record<string, unknown>;
-  const checks = (variant.criterionResults ?? []).filter(
+  const allChecks = variant.criterionResults ?? [];
+  const checks = allChecks.filter(
     (check) => check.status !== 'NEEDS_REVIEW' && check.status !== 'NOT_OBSERVED',
   );
+  const assessedCount = allChecks.filter((check) => ['GOOD', 'CAN_BE_IMPROVED', 'BAD'].includes(check.status)).length;
 
   return (
     <Page>
@@ -115,7 +117,7 @@ export function VariantDetail() {
       {checks.length > 0 ? (
         <Panel title="Checks & evidence">
           <details className={styles.checkDisclosure}>
-          <summary className={styles.disclosureSummary}>{checks.length} assessed checks — expand evidence</summary>
+          <summary className={styles.disclosureSummary}>{assessedCount} of {allChecks.length} applicable checks assessed — expand evidence</summary>
           <div className={styles.checkSummary}>
             {Object.entries(STATUS_LABELS).map(([status, label]) => {
               const count = checks.filter((check) => check.status === status).length;

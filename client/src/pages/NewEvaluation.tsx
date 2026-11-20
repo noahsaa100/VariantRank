@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createEvaluation } from '../api/evaluations';
 import { getOrCreateSessionId } from '../utils/session';
@@ -20,8 +20,38 @@ export function NewEvaluation() {
   const [goal, setGoal] = useState(GOALS[0]);
   const [goalDescription, setGoalDescription] = useState('');
   const [loading, setLoading] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading) {
+      setElapsedSeconds(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
+  const progress = !loading
+    ? 0
+    : elapsedSeconds < 10
+      ? 8 + elapsedSeconds * 1.4
+      : elapsedSeconds < 35
+        ? 22 + (elapsedSeconds - 10) * 1.2
+        : elapsedSeconds < 75
+          ? 52 + (elapsedSeconds - 35) * 0.7
+          : Math.min(95, 80 + (elapsedSeconds - 75) * 0.2);
+  const progressLabel = elapsedSeconds < 12
+    ? 'Rendering desktop and mobile pages'
+    : elapsedSeconds < 40
+      ? 'Extracting page evidence'
+      : elapsedSeconds < 75
+        ? 'Evaluating Cake checks'
+        : 'Finalising scores and evidence';
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -96,9 +126,26 @@ export function NewEvaluation() {
         </div>
 
         {error && <p className={pageStyles.error}>{error}</p>}
-        <Button className={styles.submit} type="submit" disabled={loading}>
-          {loading ? 'Running...' : 'Run Evaluation'}
-        </Button>
+        <div className={styles.submitRow}>
+          <Button className={styles.submit} type="submit" disabled={loading}>
+            {loading ? 'Running...' : 'Run Evaluation'}
+          </Button>
+          {loading && (
+            <div className={styles.progressWrap} aria-live="polite">
+              <div
+                className={styles.progressTrack}
+                role="progressbar"
+                aria-label="Evaluation progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(progress)}
+              >
+                <span className={styles.progressBar} style={{ width: `${progress}%` }} />
+              </div>
+              <span className={styles.progressText}>{progressLabel} · {elapsedSeconds}s</span>
+            </div>
+          )}
+        </div>
       </form>
     </Page>
   );

@@ -3,7 +3,7 @@ import type {
   CriterionEvaluationStatus,
   ScoreCategoryKey,
 } from '@prisma/client';
-import { evaluateCriteriaWithAi } from './aiAssistService';
+import { evaluateCriteriaWithAi, type VisualPageInventory } from './aiAssistService';
 import { calculateCriterionScores } from './criterionScoringService';
 import type { RenderedPageEvidence } from './renderedPageCollector';
 
@@ -25,7 +25,7 @@ export interface EvaluatedCriterion {
   evidence: { summary: string; pageType: string };
   explanation: string;
   confidence: number;
-  scoreImpact: { categories: string[] };
+  scoreImpact: { categories: string[]; penaltyPoints?: number };
 }
 
 const PAGE_AREA_BY_TYPE: Record<RenderedPageEvidence['pageType'], string[]> = {
@@ -40,6 +40,19 @@ const PAGE_AREA_BY_TYPE: Record<RenderedPageEvidence['pageType'], string[]> = {
 export function selectApplicableCriteria(criteria: ActiveCriterion[], pageType: RenderedPageEvidence['pageType']) {
   const areas = PAGE_AREA_BY_TYPE[pageType];
   return criteria.filter((criterion) => criterion.pageAreas.some((area) => areas.includes(area.toLowerCase())));
+}
+
+function selectVisualCaptures(page: RenderedPageEvidence, criteria: ActiveCriterion[]) {
+  const captures = page.desktop.visualCaptures ?? [];
+  const descriptions = criteria.map((criterion) => criterion.description).join(' ').toLowerCase();
+  const preferredLabels = /payment|trust|review|footer|accreditation/.test(descriptions)
+    ? ['payment and trust area', 'footer']
+    : /cta|price|variant|product|offer|shipping|stock/.test(descriptions)
+      ? ['purchase area']
+      : [];
+  const preferred = captures.filter((capture) => preferredLabels.includes(capture.label));
+  const coverage = captures.filter((capture) => capture.label.startsWith('page segment'));
+  return [...preferred, ...coverage].slice(0, 4);
 }
 
 function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvidence): EvaluatedCriterion | null {
@@ -69,12 +82,19 @@ function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvid
   }
 
   if (/50px touchpoint|touch target|space stylistically around action points/.test(text)) {
-    const controls = mobile.controls.filter((control) => control.visible);
+    const controls = mobile.controls.filter((control) => {
+      if (!control.visible) return false;
+      if (/variant/.test(text)) return control.region === 'variant' || control.region === 'purchase';
+      if (/mobile touch target/.test(text)) return control.region !== 'footer';
+      return ['button', 'input', 'select', 'textarea'].includes(control.tag)
+        && control.region !== 'navigation'
+        && control.region !== 'footer';
+    });
     const undersized = controls.filter((control) => control.width < 44 || control.height < 44).length;
-    if (controls.length === 0) return result('BAD', 'No visible mobile controls were detected.');
+    if (controls.length === 0) return result('NOT_OBSERVED', 'No controls in the criterion-specific region were captured reliably.', 0);
     if (undersized === 0) return result('GOOD', `All ${controls.length} captured mobile controls are at least 44px in both dimensions.`);
     const ratio = undersized / controls.length;
-    return result(ratio <= 0.2 ? 'CAN_BE_IMPROVED' : 'BAD', `${undersized} of ${controls.length} visible mobile controls are under 44px.`);
+    return result(ratio <= 0.5 ? 'CAN_BE_IMPROVED' : 'BAD', `${undersized} of ${controls.length} relevant mobile controls are under 44px.`, ratio <= 0.5 ? 0.85 : 0.75);
   }
 
   if (/every page has a cta|cta.*descriptive|add to cart/.test(text) && criterion.pageAreas.some((area) => area.toLowerCase() === 'sitewide')) {
@@ -97,7 +117,7 @@ function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvid
   if (!signals) return null;
 
   const presence = (present: boolean, good: string, bad: string, confidence = 0.9) =>
-    result(present ? 'GOOD' : 'BAD', present ? good : bad, confidence);
+    result(present ? 'GOOD' : 'BAD', present ? good : bad, present ? confidence : Math.min(confidence, 0.65));
   const conditionalPresence = (relevant: boolean, present: boolean, good: string, bad: string) =>
     relevant ? presence(present, good, bad) : result('NOT_RELEVANT', 'No relevant condition was detected on this page.');
 
@@ -117,7 +137,16 @@ function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvid
     return result(count >= 3 ? 'GOOD' : count >= 1 ? 'CAN_BE_IMPROVED' : 'BAD', `${count} of 4 support signals were detected: delivery, returns, FAQs and contact/help.`);
   }
   if (/payment options|trust icons such as payment/.test(text)) {
-    return presence(signals.hasPaymentMethods, 'Recognised payment-method evidence is visible.', 'No recognised payment-method evidence was detected.');
+    if (!signals.hasPaymentMethods) return null;
+    const methods = signals.paymentMethods.slice(0, 8).join(', ');
+    if (/footer shows trust icons/.test(text)) {
+      return result(signals.paymentIconsInFooter ? 'GOOD' : 'CAN_BE_IMPROVED', signals.paymentIconsInFooter
+        ? `Payment/trust icons are present in the footer, including ${methods}.`
+        : `Payment methods were detected (${methods}), but their footer placement was not confirmed.`);
+    }
+    return result(signals.paymentNearProductCta ? 'GOOD' : 'CAN_BE_IMPROVED', signals.paymentNearProductCta
+      ? `Payment options are displayed near/below the purchase CTA, including ${methods}.`
+      : `Payment methods were detected (${methods}), but placement underneath the CTA was not confirmed.`);
   }
   if (/footer contains the following links|return policy.*privacy policy|footer.*business information/.test(text)) {
     const count = [signals.hasPolicyLinks, signals.hasContactLink, /company|registered|address/i.test(signals.footerText)].filter(Boolean).length;
@@ -130,7 +159,9 @@ function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvid
     return presence(signals.hasQuantityDiscount, signals.discounts.length ? `Quantity/value savings are visible, including “${signals.discounts[0]}”.` : 'Quantity/value savings messaging is visible.', 'No quantity discount or bulk-saving evidence was detected.');
   }
   if (/pay in installments|over 3 months/.test(text)) {
-    return presence(signals.hasInstallments, 'Installment-payment messaging is present.', 'No installment-payment messaging was detected.');
+    return signals.hasInstallments
+      ? result('GOOD', 'Installment-payment messaging and/or a recognised installment provider is present.')
+      : null;
   }
   if (/product is in sale|sale price|showing the discount/.test(text)) {
     const relevant = signals.discounts.length > 0 || /\bsale\b|was\s*[£$€]/i.test(combinedText);
@@ -147,7 +178,9 @@ function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvid
     return conditionalPresence(/low stock|only \d+ left/i.test(combinedText), signals.hasStock, 'Low-stock messaging is present.', 'Low-stock context was detected without clear availability messaging.');
   }
   if (/product guide|size guide/.test(text)) {
-    return presence(signals.hasSizeGuide, 'A product/size guide is present.', 'No product or size guide was detected.');
+    return signals.hasSizeGuide
+      ? result('GOOD', 'Product size guidance is present, with sizing help exposed in the rendered page content.')
+      : null;
   }
   if (/quantity selectors are interactive/.test(text)) {
     return presence(signals.hasQuantitySelector, 'An interactive quantity selector is present.', 'No interactive quantity selector was detected.');
@@ -205,13 +238,17 @@ function deterministicVerdict(criterion: ActiveCriterion, page: RenderedPageEvid
   return null;
 }
 
-export async function evaluateCriteriaForPage(criteria: ActiveCriterion[], page: RenderedPageEvidence) {
+export async function evaluateCriteriaForPage(
+  criteria: ActiveCriterion[],
+  page: RenderedPageEvidence,
+  visualInventory: VisualPageInventory | null = null,
+) {
   const applicable = selectApplicableCriteria(criteria, page.pageType);
   const deterministic: EvaluatedCriterion[] = [];
   const contextual: ActiveCriterion[] = [];
   for (const criterion of applicable) {
     const verdict = deterministicVerdict(criterion, page);
-    if (verdict) deterministic.push(verdict);
+    if (verdict && verdict.confidence >= 0.6) deterministic.push(verdict);
     else if (criterion.defaultMethod === 'MANUAL') {
       deterministic.push({
         criterionId: criterion.id,
@@ -227,6 +264,8 @@ export async function evaluateCriteriaForPage(criteria: ActiveCriterion[], page:
 
   const aiResults: EvaluatedCriterion[] = [];
   const chunkSize = 8;
+  let targetedFollowupsUsed = 0;
+  const maxTargetedFollowups = 2;
   for (let index = 0; index < contextual.length; index += chunkSize) {
     const chunk = contextual.slice(index, index + chunkSize);
     const verdicts = await evaluateCriteriaWithAi({
@@ -235,13 +274,26 @@ export async function evaluateCriteriaForPage(criteria: ActiveCriterion[], page:
       controls: [...page.desktop.controls, ...page.mobile.controls],
       headings: [...page.desktop.headings, ...page.mobile.headings],
       criteria: chunk.map((criterion) => ({ id: criterion.id, description: criterion.description, rationale: criterion.rationale })),
-      desktopScreenshotBase64: page.desktop.screenshotBase64,
-      mobileScreenshotBase64: page.mobile.screenshotBase64,
+      visualInventory,
+      ...(!visualInventory ? {
+        desktopScreenshotBase64: page.desktop.screenshotBase64,
+        mobileScreenshotBase64: page.mobile.screenshotBase64,
+        visualCaptures: selectVisualCaptures(page, chunk),
+      } : {}),
     });
     const byId = new Map(verdicts.map((verdict) => [verdict.criterionId, verdict]));
-    const missing = chunk.filter((criterion) => !byId.has(criterion.id));
-    for (let retryIndex = 0; retryIndex < missing.length; retryIndex += 3) {
-      const retryChunk = missing.slice(retryIndex, retryIndex + 3);
+    const missing = chunk.filter((criterion) => {
+      const verdict = byId.get(criterion.id);
+      return !verdict || verdict.confidence < 0.6;
+    });
+    const prioritizedMissing = [...missing].sort((a, b) => b.importanceWeight - a.importanceWeight);
+    for (
+      let retryIndex = 0;
+      retryIndex < prioritizedMissing.length && targetedFollowupsUsed < maxTargetedFollowups;
+      retryIndex += 3
+    ) {
+      const retryChunk = prioritizedMissing.slice(retryIndex, retryIndex + 3);
+      targetedFollowupsUsed += 1;
       const retried = await evaluateCriteriaWithAi({
         pageType: page.pageType,
         visibleText: `${page.desktop.visibleText}\nMOBILE:\n${page.mobile.visibleText}`,
@@ -250,19 +302,25 @@ export async function evaluateCriteriaForPage(criteria: ActiveCriterion[], page:
         criteria: retryChunk.map((criterion) => ({ id: criterion.id, description: criterion.description, rationale: criterion.rationale })),
         desktopScreenshotBase64: page.desktop.screenshotBase64,
         mobileScreenshotBase64: page.mobile.screenshotBase64,
+        visualCaptures: selectVisualCaptures(page, retryChunk),
+        visualInventory,
       });
-      for (const verdict of retried) byId.set(verdict.criterionId, verdict);
+      for (const verdict of retried) {
+        const existing = byId.get(verdict.criterionId);
+        if (!existing || verdict.confidence > existing.confidence) byId.set(verdict.criterionId, verdict);
+      }
     }
     for (const criterion of chunk) {
       const verdict = byId.get(criterion.id);
       const summary = verdict?.evidence ?? 'No reliable rendered evidence was returned for this check; it was excluded from scoring.';
+      const reliableVerdict = verdict && verdict.confidence >= 0.6 ? verdict : null;
       aiResults.push({
         criterionId: criterion.id,
-        status: verdict?.status ?? 'NOT_OBSERVED',
+        status: reliableVerdict?.status ?? 'NOT_OBSERVED',
         method: 'AI_ASSISTED',
         evidence: { summary, pageType: page.pageType },
         explanation: summary,
-        confidence: verdict?.confidence ?? 0,
+        confidence: reliableVerdict?.confidence ?? 0,
         scoreImpact: { categories: criterion.categoryMappings.map((mapping) => mapping.category) },
       });
     }
@@ -276,6 +334,7 @@ export async function evaluateCriteriaForPage(criteria: ActiveCriterion[], page:
       criterionId: result.criterionId,
       status: result.status,
       importanceWeight: criterion.importanceWeight,
+      confidence: result.confidence,
       categoryMappings: criterion.categoryMappings,
     };
   }), {
@@ -287,5 +346,32 @@ export async function evaluateCriteriaForPage(criteria: ActiveCriterion[], page:
       TECHNICAL_ACCESSIBILITY: 15,
     },
   });
+  const baseScore = scoreSummary.overallScore;
+  if (baseScore !== null) {
+    for (const result of results) {
+      if (result.status !== 'BAD') continue;
+      const hypothetical = calculateCriterionScores(results.map((candidate) => {
+        const criterion = criteriaById.get(candidate.criterionId)!;
+        return {
+          criterionId: candidate.criterionId,
+          status: candidate.criterionId === result.criterionId ? 'GOOD' as const : candidate.status,
+          importanceWeight: criterion.importanceWeight,
+          confidence: candidate.confidence,
+          categoryMappings: criterion.categoryMappings,
+        };
+      }), {
+        categoryWeights: {
+          SHOPPING_UX: 20,
+          TRUST_CONFIDENCE: 20,
+          OFFER_CLARITY: 20,
+          PURCHASE_EASE: 25,
+          TECHNICAL_ACCESSIBILITY: 15,
+        },
+      }).overallScore;
+      result.scoreImpact.penaltyPoints = hypothetical === null
+        ? 0
+        : Number(Math.max(0, hypothetical - baseScore).toFixed(1));
+    }
+  }
   return { applicable, results, scoreSummary };
 }
