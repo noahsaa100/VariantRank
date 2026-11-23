@@ -1,0 +1,71 @@
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.switch {
+  position: relative;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  inset: -0.35rem;
+}
+
+.switch:focus-visible .track {
+  outline: 3px solid rgb(255 59 0 / 25%);
+  outline-offset: 3px;
+}
+
+.switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.track {
+  position: relative;
+  display: block;
+  width: 42px;
+  height: 22px;
+  border: 2px solid var(--cake-black);
+  border-radius: 2px;
+  background: var(--cake-chalk);
+  transition: background-color 180ms ease;
+}
+
+.switch[data-checked] .track {
+  background: var(--cake-orange);
+}
+
+.thumb {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 1px;
+  background: var(--cake-black);
+  transform-origin: center;
+}
+
+.stateLabel {
+  cursor: pointer;
+  user-select: none;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track { transition-duration: 1ms; }
+}

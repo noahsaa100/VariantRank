@@ -183,6 +183,15 @@ export function ImportReview() {
                       <div className={styles.checkMeta}><span>{candidate.sourceSheet} · row {candidate.sourceRow}</span><span>{Math.round((candidate.extractionConfidence ?? 0) * 100)}% extraction confidence</span></div>
                       <h3>{proposedCheck.description || proposedCheck.title}</h3>
                       {proposedCheck.rationale && <details><summary>Why it matters</summary><p>{proposedCheck.rationale}</p></details>}
+                      {proposedCheck.statusDefinitions && (
+                        <details>
+                          <summary>Proposed scoring definitions</summary>
+                          <p><strong>Good:</strong> {proposedCheck.statusDefinitions.good}</p>
+                          <p><strong>Can be improved:</strong> {proposedCheck.statusDefinitions.canBeImproved}</p>
+                          <p><strong>Bad:</strong> {proposedCheck.statusDefinitions.bad}</p>
+                          <p><strong>Not applicable:</strong> {proposedCheck.statusDefinitions.notApplicable}</p>
+                        </details>
+                      )}
                       <div className={styles.tags}>
                         {proposedCheck.pageAreas?.map((value) => <span key={value}>{value}</span>)}
                         {proposedCheck.outcomeMappings?.map((value) => <span key={value}>{readable(value)}</span>)}

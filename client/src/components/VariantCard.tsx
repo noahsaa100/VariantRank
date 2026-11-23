@@ -3,13 +3,15 @@ import { ScoreBar } from './ScoreBar';
 import { useNavigate } from 'react-router-dom';
 import { Button } from './Button';
 import styles from './VariantCard.module.css';
+import { humanizeFinding } from '../utils/findings';
 
 interface VariantCardProps {
   variant: Variant;
   evaluationId: string;
+  onViewDetails?: () => void;
 }
 
-export function VariantCard({ variant, evaluationId }: VariantCardProps) {
+export function VariantCard({ variant, evaluationId, onViewDetails }: VariantCardProps) {
   const navigate = useNavigate();
 
   return (
@@ -31,7 +33,7 @@ export function VariantCard({ variant, evaluationId }: VariantCardProps) {
           <h4>Top Drivers</h4>
           <ul>
             {variant.topDrivers.map((d) => (
-              <li key={d}>{d}</li>
+              <li key={d}>{humanizeFinding(d)}</li>
             ))}
           </ul>
         </div>
@@ -39,7 +41,7 @@ export function VariantCard({ variant, evaluationId }: VariantCardProps) {
       <Button
         className={styles.action}
         variant="primary"
-        onClick={() => navigate(`/results/${evaluationId}/variant/${variant.id}`)}
+        onClick={onViewDetails ?? (() => navigate(`/results/${evaluationId}/variant/${variant.id}`))}
       >
         View Details
       </Button>

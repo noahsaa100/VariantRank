@@ -10,7 +10,16 @@ import {
 import { GOAL_WEIGHT_MATRICES } from '../config/goalWeightMatrices';
 import { GOAL_LABELS, type GoalKey } from '../config/goals';
 import type { CtaClassificationAssist, EcommerceAnalysisAssist, GoalMappingAssist } from '../types/aiAssist';
-import { analyzeEcommercePageWithAi, analyzeVisualPageWithAi, classifyPrimaryCtaWithAi } from './aiAssistService';
+import {
+  analyzeEcommercePageWithAi,
+  analyzeVisualPageWithAi,
+  classifyPrimaryCtaWithAi,
+  createAiUsageTracker,
+  generateComparisonNarrativeWithAi,
+  summarizeAiUsage,
+  withAiUsageTracking,
+  type AiUsageTracker,
+} from './aiAssistService';
 import {
   createFallbackFeatures,
   analyzeCtaText,
@@ -22,8 +31,10 @@ import {
 } from './htmlFeatureExtractor';
 import { fetchPageHtml } from './pageFetcher';
 import { resolveGoalWithAssist } from './goalAssistService';
-import { collectRenderedPage } from './renderedPageCollector';
+import { collectRenderedPage, type RenderedStorageState } from './renderedPageCollector';
 import { evaluateCriteriaForPage, type ActiveCriterion, type EvaluatedCriterion } from './criterionEvaluationService';
+import { planFullSiteScan } from './siteScanService';
+import { CRITERION_GOAL_PROFILES } from '../config/criterionGoalProfiles';
 
 const prisma = new PrismaClient();
 
@@ -44,6 +55,32 @@ interface VariantComputation {
   topDrivers: string[];
   features: ExtractedFeatures;
   criterionResults?: EvaluatedCriterion[];
+  pageType?: string;
+  siteRootUrl?: string;
+}
+
+function readableCardFinding(value: string): string {
+  let finding = value.replace(/\s+/g, ' ').replace(/^[-–—•]+\s*/, '').trim();
+  const separator = finding.indexOf(': ');
+  if (separator > 0) {
+    const prefix = finding.slice(0, separator);
+    if (prefix.length > 28 || /product title|imagery|availability|price|should|every page/i.test(prefix)) {
+      finding = finding.slice(separator + 2).trim();
+    }
+  }
+
+  const discount = finding.match(/sale evidence includes.*?[“"]([^”"]*%\s*off)[”"]/i);
+  if (discount) return `A ${discount[1]} discount is clearly promoted, making the offer easy for shoppers to understand.`;
+  const support = finding.match(/(\d+) of \1 support signals were detected:\s*(.+)\.?$/i);
+  if (support) return `${support[2].replace(/\band\b/i, 'and')} are all easy to find, giving shoppers stronger reassurance.`;
+  if (/breadcrumb navigation is present/i.test(finding)) return 'Breadcrumb navigation helps shoppers understand where they are and move around the store.';
+  const images = finding.match(/(\d+) images were detected, supporting a product gallery/i);
+  if (images) return `A ${images[1]}-image product gallery gives shoppers a detailed view of the product.`;
+  if (/^link labels clearly describe/i.test(finding)) return 'Clear link labels make navigation easier to understand and more accessible.';
+  const productTitle = finding.match(/detected product title is [“"](.+?)[”"]/i);
+  if (productTitle) return `The product is clearly identified as “${productTitle[1]}”.`;
+
+  return finding.replace(/\.{2,}/g, '.').replace(/\s+([.,;:])/g, '$1');
 }
 
 const ALL_CONCEPTS = Object.keys(CONCEPT_LABELS) as BehaviouralConcept[];
@@ -220,16 +257,13 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
         ? 0
         : -8;
 
-  // Synthesises verb presence, CTA type, and commitment into a single 0–100 clarity signal.
-  // Scaled by 0.6 in actionOrientation (range 12–54), replacing the old fragmented
-  // primaryCtaText-presence + primaryType-branch contributions.
-  // Collapse CTA wording quality into one signal before goal weighting is applied.
+  // Combine CTA wording, type and commitment before goal weighting.
   const ctaClarityScore: number = (() => {
-    if (!primaryVerbPresent) return 20;                  // no verb → very low clarity
-    if (primaryType === 'action') return 90;             // action verb + action type → high clarity
-    if (primaryType === 'mixed') return 60;              // verb but mixed intent → medium clarity
-    if (primaryType === 'informational') return 30;      // verb present but informational → low clarity
-    return 20;                                           // unknown type → very low clarity
+    if (!primaryVerbPresent) return 20;
+    if (primaryType === 'action') return 90;
+    if (primaryType === 'mixed') return 60;
+    if (primaryType === 'informational') return 30;
+    return 20;
   })();
 
   const messageClarity = toScore(
@@ -258,15 +292,13 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
     ecommerceValueAdjustment,
   );
 
-  // Ordered by severity; short-circuits so only the most impactful adjustment fires per variant.
-  // Keeps actionOrientation low when there is no usable action signal, and high when intent is clear.
-  // Apply only the strongest CTA-intent deduction to avoid stacking near-duplicate penalties.
+  // Apply only the strongest CTA-intent adjustment.
   const ctaSignalAdjustment: number = (() => {
-    if (features.ctaCount === 0) return -20;                                          // no CTA → strong suppression
-    if (!primaryVerbPresent) return -10;                                              // CTA present but intent unreadable
-    if (primaryType === 'informational') return -8;                                   // explicitly non-conversion type
-    if (cta.mixedCtaCount > 0 && cta.actionCtaCount === 0) return -5;               // only mixed CTAs, no clear action
-    return 0;                                                                         // clear action CTA — no deduction
+    if (features.ctaCount === 0) return -20;
+    if (!primaryVerbPresent) return -10;
+    if (primaryType === 'informational') return -8;
+    if (cta.mixedCtaCount > 0 && cta.actionCtaCount === 0) return -5;
+    return 0;
   })();
 
   const actionOrientation = toScore(
@@ -291,9 +323,7 @@ function deriveBehaviouralScores(features: ExtractedFeatures, goalKey: GoalKey):
       : 10),
   );
 
-  // No-form pages get a neutral baseline: absence of a form is not inherently efficient.
-  // Field-count tiers reflect progressive friction as forms grow longer.
-  // Approximate interaction effort from form length rather than treating every form equally.
+  // No-form pages are neutral; longer forms add progressive friction.
   const formEfficiencyBase = features.formPurpose === 'product'
     ? features.formFieldCount <= 10
       ? 80
@@ -455,22 +485,18 @@ function deriveRulePenalties(
     });
   }
 
-  // CTA ambiguity group — only fires when CTAs are present to avoid overlap with the no-CTA penalty.
-  // if/else-if ensures exactly one tier fires per evaluation, preventing internal double-counting.
-  // Isolate CTA ambiguity into one tier so the same weakness is not double-counted.
+  // Apply one CTA ambiguity tier to avoid duplicate penalties.
   if (features.ctaCount > 0) {
     const isInformational = cta.primaryCtaType === 'informational';
     const verbMissing = !cta.primaryVerb;
     const hasMixed = cta.mixedCtaCount > 0;
 
     if (isInformational || verbMissing) {
-      // High ambiguity: primary CTA type points away from conversion, or intent cannot be inferred from verb
       penalties.push({
         rule: 'Clarity/UX risk: CTA intent is ambiguous or non-action-oriented',
         penalty: goalKey === 'contentEngagement' ? -7 : -12,
       });
     } else if (hasMixed) {
-      // Moderate ambiguity: mixed CTA signals present alongside action CTAs, may dilute focus
       penalties.push({
         rule: 'UX risk: Mixed CTA signals may dilute primary conversion intent',
         penalty: goalKey === 'contentEngagement' ? -3 : -6,
@@ -660,28 +686,28 @@ async function analyzeVariant(
   goalKey: GoalKey,
   goalAssist: GoalMappingAssist,
   activeCriteria: ActiveCriterion[],
+  storageState?: RenderedStorageState,
 ): Promise<VariantComputation> {
   try {
     if (activeCriteria.length > 0) {
-      const rendered = await collectRenderedPage(url);
+      const rendered = await collectRenderedPage(url, storageState);
       const extracted = extractFeaturesFromHtml(rendered.html, rendered.finalUrl);
-      const inventoryCaptures = (rendered.desktop.visualCaptures ?? [])
-        .filter((capture) => capture.label.startsWith('page segment') || ['purchase area', 'payment and trust area', 'footer'].includes(capture.label))
-        .slice(0, 4);
+      const features = {
+        ...withAssistMetadata(extracted, goalAssist, null),
+      };
       const visualInventory = await analyzeVisualPageWithAi({
         pageType: rendered.pageType,
         visibleText: `${rendered.desktop.visibleText}\nMOBILE:\n${rendered.mobile.visibleText}`,
         controls: [...rendered.desktop.controls, ...rendered.mobile.controls],
-        signals: { desktop: rendered.desktop.signals, mobile: rendered.mobile.signals },
+        signals: rendered.desktop.signals ?? null,
         desktopScreenshotBase64: rendered.desktop.screenshotBase64,
         mobileScreenshotBase64: rendered.mobile.screenshotBase64,
-        visualCaptures: inventoryCaptures,
+        visualCaptures: rendered.desktop.visualCaptures,
       });
-      const features = {
-        ...withAssistMetadata(extracted, goalAssist, null),
-        visualInventory,
-      };
-      const criterionEvaluation = await evaluateCriteriaForPage(activeCriteria, rendered, visualInventory);
+      if (visualInventory) features.visualInventory = visualInventory;
+      const criterionEvaluation = await evaluateCriteriaForPage(activeCriteria, rendered, visualInventory, goalKey);
+      const baselineConceptScores = applyGoalMultipliers(deriveBehaviouralScores(features, goalKey), goalKey);
+      const baselineCategories = deriveCategoryScores(baselineConceptScores);
       const categoryLabels: Record<string, string> = {
         SHOPPING_UX: 'Shopping UX',
         TRUST_CONFIDENCE: 'Trust & confidence',
@@ -689,33 +715,66 @@ async function analyzeVariant(
         PURCHASE_EASE: 'Purchase ease',
         TECHNICAL_ACCESSIBILITY: 'Technical & accessibility',
       };
-      const categoryScores = Object.fromEntries(
-        Object.entries(categoryLabels).map(([category, label]) => [
-          label,
-          criterionEvaluation.scoreSummary.categoryScores[category as keyof typeof criterionEvaluation.scoreSummary.categoryScores]
-            ?? criterionEvaluation.scoreSummary.qualityScore
-            ?? 0,
-        ]),
-      );
-      const criterionById = new Map(criterionEvaluation.applicable.map((criterion) => [criterion.id, criterion]));
-      const good = criterionEvaluation.results.filter((result) => result.status === 'GOOD' && result.confidence >= 0.6).slice(0, 4);
-      const bad = criterionEvaluation.results.filter((result) => result.status === 'BAD' && result.confidence >= 0.6).slice(0, 8);
+      const baselineByCriterionCategory: Record<string, number> = {
+        SHOPPING_UX: baselineCategories.UX,
+        TRUST_CONFIDENCE: baselineCategories.Trust,
+        OFFER_CLARITY: baselineCategories.Clarity,
+        PURCHASE_EASE: baselineCategories.Friction,
+        TECHNICAL_ACCESSIBILITY: baselineCategories.Technical,
+      };
+      const assessedCriteria = criterionEvaluation.scoreSummary.coverage.assessed;
+      const refinementShare = Math.min(0.7, assessedCriteria / (assessedCriteria + 12));
+      const categoryScores = Object.fromEntries(Object.entries(categoryLabels).map(([category, label]) => {
+        const baseline = baselineByCriterionCategory[category];
+        const criterionScore = criterionEvaluation.scoreSummary.categoryScores[category as keyof typeof criterionEvaluation.scoreSummary.categoryScores];
+        const score = criterionScore === undefined
+          ? baseline
+          : baseline * (1 - refinementShare) + criterionScore * refinementShare;
+        return [label, toScore(score)];
+      }));
+      const criterionWeight = new Map(criterionEvaluation.applicable.map((criterion) => [criterion.id, criterion.importanceWeight]));
+      const good = criterionEvaluation.results
+        .filter((result) => result.status === 'GOOD' && result.confidence >= 0.6)
+        .sort((a, b) => (criterionWeight.get(b.criterionId) ?? 0) - (criterionWeight.get(a.criterionId) ?? 0))
+        .slice(0, 4);
+      const bad = criterionEvaluation.results
+        .filter((result) => result.status === 'BAD' && result.confidence >= 0.6 && (result.scoreImpact.penaltyPoints ?? 0) > 0)
+        .slice(0, 8);
+      const uniquePenalties = [...new Map(bad.map((result) => {
+        const rule = readableCardFinding(result.explanation);
+        return [rule.toLowerCase(), {
+          rule,
+          penalty: -(result.scoreImpact.penaltyPoints ?? 0),
+        }] as const;
+      })).values()];
+      const baselinePenalties = deriveRulePenalties(features, baselineConceptScores, goalKey)
+        .filter((penalty) => /page fetch|missing https|missing page title|missing meta description|missing viewport|no clear cta|content.*dens|form (?:is very long|is long|has moderate friction)/i.test(penalty.rule))
+        .map((penalty) => ({ ...penalty, rule: readableCardFinding(penalty.rule) }));
+      const combinedPenalties = [...new Map([...uniquePenalties, ...baselinePenalties]
+        .map((penalty) => [penalty.rule.toLowerCase(), penalty] as const)).values()].slice(0, 8);
+      const baselineDrivers = deriveTopDrivers(features, baselineConceptScores, goalKey)
+        .map(readableCardFinding);
+      const combinedDrivers = [...new Set([
+        ...good.map((result) => readableCardFinding(result.explanation)),
+        ...baselineDrivers,
+      ])].slice(0, 4);
+      const goalWeights = CRITERION_GOAL_PROFILES[goalKey].categoryWeights;
+      const totalWeight = Object.values(goalWeights).reduce((sum, weight) => sum + weight, 0);
+      const totalScore = toScore(Object.entries(categoryLabels).reduce((sum, [category, label]) =>
+        sum + (categoryScores[label] ?? 0) * goalWeights[category as keyof typeof goalWeights], 0) / totalWeight);
       return {
         index,
         url,
-        totalScore: criterionEvaluation.scoreSummary.overallScore ?? 0,
+        totalScore,
         categoryScores,
-        rulePenalties: bad.map((result) => ({
-          rule: `${criterionById.get(result.criterionId)?.title ?? 'Best-practice check'}: ${result.explanation}`,
-          penalty: -(result.scoreImpact.penaltyPoints ?? 0),
-        })),
-        topDrivers: good.map((result) => `${criterionById.get(result.criterionId)?.title ?? 'Best-practice check'}: ${result.explanation}`),
+        rulePenalties: combinedPenalties,
+        topDrivers: combinedDrivers,
         features,
         criterionResults: criterionEvaluation.results,
+        pageType: rendered.pageType,
       };
     }
 
-    // Pipeline: fetch -> extract -> optional AI CTA assist -> score -> rankable result.
     const fetchResult = await fetchPageHtml(url);
     const extracted = fetchResult.ok
       ? extractFeaturesFromHtml(fetchResult.html, fetchResult.finalUrl)
@@ -744,7 +803,6 @@ async function analyzeVariant(
       features,
     };
   } catch (error) {
-    // Guard the whole pipeline so one analysis failure does not abort the batch.
     const message = error instanceof Error ? error.message : 'Unexpected analysis error';
     const fallback = createFallbackFeatures(url, message);
     const features = withAssistMetadata(fallback, goalAssist, null);
@@ -769,10 +827,60 @@ export interface CreateEvaluationInput {
   goal: string;
   goalDescription?: string;
   anonymousSessionId?: string;
+  scanMode?: 'SINGLE_PAGE' | 'FULL_SITE';
 }
 
-export async function createEvaluation(input: CreateEvaluationInput) {
-  const { urls, goal, goalDescription, anonymousSessionId } = input;
+const FULL_SITE_PAGE_WEIGHTS: Record<string, number> = {
+  homepage: 0.15,
+  collection: 0.15,
+  product: 0.30,
+  search: 0.10,
+  policy: 0.05,
+  cart: 0.10,
+  checkout: 0.15,
+  other: 0.05,
+};
+
+function buildStoreSummary(rootUrl: string, variants: VariantComputation[]) {
+  const weighted = variants.map((variant) => ({
+    variant,
+    weight: FULL_SITE_PAGE_WEIGHTS[variant.pageType ?? 'other'] ?? FULL_SITE_PAGE_WEIGHTS.other,
+  }));
+  const weightTotal = weighted.reduce((sum, item) => sum + item.weight, 0) || 1;
+  const categoryNames = [...new Set(variants.flatMap((variant) => Object.keys(variant.categoryScores)))];
+  const categoryScores = Object.fromEntries(categoryNames.map((category) => [
+    category,
+    toScore(weighted.reduce((sum, item) => sum + (item.variant.categoryScores[category] ?? 0) * item.weight, 0) / weightTotal),
+  ]));
+  return {
+    rootUrl,
+    overallScore: toScore(weighted.reduce((sum, item) => sum + item.variant.totalScore * item.weight, 0) / weightTotal),
+    categoryScores,
+    pagesScanned: variants.length,
+    pageTypes: variants.reduce<Record<string, number>>((counts, variant) => {
+      const pageType = variant.pageType ?? 'other';
+      counts[pageType] = (counts[pageType] ?? 0) + 1;
+      return counts;
+    }, {}),
+  };
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
+async function createEvaluationTracked(input: CreateEvaluationInput, usageTracker: AiUsageTracker) {
+  const { urls, goal, goalDescription, anonymousSessionId, scanMode = 'SINGLE_PAGE' } = input;
   const { scoringGoalKey, goalAssist } = await resolveGoalWithAssist(goal, goalDescription);
   const goalKey = scoringGoalKey;
   const start = Date.now();
@@ -790,12 +898,91 @@ export async function createEvaluation(input: CreateEvaluationInput) {
     pageAreas: criterion.pageAreas,
     importanceWeight: criterion.importanceWeight,
     defaultMethod: criterion.defaultMethod,
+    evidenceRequirements: criterion.evidenceRequirements && typeof criterion.evidenceRequirements === 'object' && !Array.isArray(criterion.evidenceRequirements)
+      ? criterion.evidenceRequirements as Record<string, unknown>
+      : null,
     categoryMappings: criterion.categoryMappings,
   })) ?? [];
 
-  const variantData = await Promise.all(urls.map((url, index) => analyzeVariant(url, index, goalKey, goalAssist, activeCriteria)));
+  const scanPlans = scanMode === 'FULL_SITE'
+    ? await Promise.all(urls.slice(0, 2).map((url) => planFullSiteScan(url, goalKey)))
+    : [];
+  const scanItems: Array<{
+    url: string;
+    expectedType?: string;
+    rootUrl?: string;
+    storageState?: RenderedStorageState;
+  }> = scanPlans.flatMap((plan) => plan.pages.map((page) => ({
+    ...page,
+    rootUrl: plan.rootUrl,
+    storageState: plan.storageState,
+  })));
+  const evaluationUrls = scanMode === 'FULL_SITE' ? scanItems.map((item) => item.url) : urls;
+  const workItems: Array<{
+    url: string;
+    expectedType?: string;
+    rootUrl?: string;
+    storageState?: RenderedStorageState;
+  }> = scanMode === 'FULL_SITE'
+      ? scanItems
+      : urls.map((url) => ({ url }));
+  const rawVariantData = await mapWithConcurrency<
+    { url: string; expectedType?: string; rootUrl?: string; storageState?: RenderedStorageState },
+    VariantComputation
+  >(
+    workItems,
+    scanMode === 'FULL_SITE' ? 5 : Math.min(2, urls.length),
+    async (item, index) => {
+      const variant = await analyzeVariant(item.url, index, goalKey, goalAssist, activeCriteria, item.storageState);
+      return { ...variant, pageType: item.expectedType ?? variant.pageType, siteRootUrl: item.rootUrl };
+    },
+  );
+  const variantData = rawVariantData;
+  const storeSummaries = scanMode === 'FULL_SITE'
+    ? scanPlans.map((plan) => buildStoreSummary(
+      plan.rootUrl,
+      variantData.filter((variant) => variant.siteRootUrl === plan.rootUrl),
+    )).sort((a, b) => b.overallScore - a.overallScore)
+    : [];
+  const comparisonSynthesis = storeSummaries.length > 0
+    ? await generateComparisonNarrativeWithAi({
+      stores: storeSummaries.map((store) => {
+        const pages = variantData.filter((variant) => variant.siteRootUrl === store.rootUrl);
+        const placementEvidence = pages.flatMap((variant) => {
+          const inventory = variant.features.visualInventory;
+          if (!inventory || typeof inventory !== 'object' || Array.isArray(inventory)) return [];
+          const record = inventory as { primaryCta?: { text?: string | null; location?: string | null }; evidence?: Record<string, string[]> };
+          const cta = record.primaryCta?.text && record.primaryCta.location
+            ? [`${record.primaryCta.text} — ${record.primaryCta.location}`]
+            : [];
+          const located = Object.entries(record.evidence ?? {}).flatMap(([kind, values]) =>
+            values.filter((value) => /above|below|beneath|near|next to|footer|header|top|bottom|beside|under/i.test(value))
+              .map((value) => `${kind}: ${value}`),
+          );
+          const locatedFindings = [...variant.topDrivers, ...variant.rulePenalties.map((penalty) => penalty.rule)]
+            .filter((value) => /above|below|beneath|near|next to|footer|header|top|bottom|beside|under/i.test(value));
+          return [...cta, ...located, ...locatedFindings];
+        });
+        return {
+          url: store.rootUrl,
+          score: store.overallScore,
+          categoryScores: store.categoryScores,
+          strengths: [...new Set(pages.flatMap((variant) => variant.topDrivers))].slice(0, 6),
+          weaknesses: pages.flatMap((variant) => variant.rulePenalties)
+            .sort((a, b) => a.penalty - b.penalty)
+            .slice(0, 4)
+            .map((penalty) => penalty.rule),
+          placementEvidence: [...new Set(placementEvidence)].slice(0, 8),
+        };
+      }),
+    })
+    : null;
+  const siteSummary = scanMode === 'FULL_SITE' ? {
+    stores: storeSummaries,
+    comparisonNarrative: comparisonSynthesis?.narrative ?? null,
+    storeInsights: comparisonSynthesis?.storeInsights ?? [],
+  } : null;
 
-  // Rank after all variants are scored so persistence does not depend on request order.
   const ranked = [...variantData].sort((a, b) => b.totalScore - a.totalScore);
   const rankMap = new Map<number, number>(ranked.map((variant, rankIndex) => [variant.index, rankIndex + 1]));
 
@@ -804,9 +991,21 @@ export async function createEvaluation(input: CreateEvaluationInput) {
   const evaluation = await prisma.evaluation.create({
     data: {
       goal,
-      urls,
+      urls: evaluationUrls,
       anonymousSessionId: anonymousSessionId ?? null,
       processingTime,
+      scanMode,
+      siteSummary: siteSummary
+        ? siteSummary as unknown as Prisma.InputJsonValue
+        : Prisma.JsonNull,
+      crawlReport: scanPlans.length > 0 ? {
+        stores: scanPlans.map((plan) => ({
+          rootUrl: plan.rootUrl,
+          pages: plan.pages,
+          shopperFlow: plan.shopperFlow,
+        })),
+      } as unknown as Prisma.InputJsonValue : Prisma.JsonNull,
+      aiUsage: summarizeAiUsage(usageTracker) as unknown as Prisma.InputJsonValue,
       variants: {
         create: variantData.map((variant) => ({
           url: variant.url,
@@ -816,9 +1015,12 @@ export async function createEvaluation(input: CreateEvaluationInput) {
           rulePenalties: variant.rulePenalties as unknown as Prisma.InputJsonValue,
           topDrivers: variant.topDrivers as unknown as Prisma.InputJsonValue,
           features: variant.features as Prisma.InputJsonValue,
+          siteRootUrl: variant.siteRootUrl ?? null,
+          pageType: variant.pageType ?? null,
           ...(variant.criterionResults ? {
             criterionResults: {
-              create: variant.criterionResults.map((result) => ({
+              create: variant.criterionResults
+                .map((result) => ({
                 criterionId: result.criterionId,
                 status: result.status,
                 method: result.method,
@@ -827,7 +1029,7 @@ export async function createEvaluation(input: CreateEvaluationInput) {
                 confidence: result.confidence,
                 scoreImpact: result.scoreImpact,
                 evaluatorVersion: 'cake-playwright-v1',
-              })),
+                })),
             },
           } : {}),
         })),
@@ -837,6 +1039,11 @@ export async function createEvaluation(input: CreateEvaluationInput) {
   });
 
   return evaluation;
+}
+
+export async function createEvaluation(input: CreateEvaluationInput) {
+  const tracker = createAiUsageTracker();
+  return withAiUsageTracking(tracker, () => createEvaluationTracked(input, tracker));
 }
 
 export async function listEvaluations() {

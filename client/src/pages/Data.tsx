@@ -23,7 +23,7 @@ function formatStatus(value: string): string {
 export function Data() {
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
-  const [libraryName, setLibraryName] = useState('Cake Ecommerce Scorecard');
+  const [libraryName, setLibraryName] = useState('VariantRank Best Practices');
   const [imports, setImports] = useState<BestPracticeImportJob[]>([]);
   const [result, setResult] = useState<BestPracticeImportResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -154,21 +154,21 @@ export function Data() {
             <input
               value={libraryName}
               onChange={(event) => setLibraryName(event.target.value)}
-              placeholder="e.g. Cake Ecommerce Scorecard"
+              placeholder="e.g. Ecommerce UX Best Practices"
               required
             />
           </label>
           <label className={styles.field}>
-            <span>Workbook</span>
+            <span>Best-practice document</span>
             <input
               type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              accept=".xlsx,.csv,.json,.txt,.md,.markdown,.pdf,.docx"
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               required
             />
           </label>
           <div className={styles.submitRow}>
-            <p>XLSX only · Maximum 15 MB · Staged for review</p>
+            <p>XLSX, CSV, JSON, TXT, Markdown, PDF or DOCX · Maximum 50 MB · Staged for review</p>
             <Button type="submit" disabled={!file || loading}>
               {loading ? 'Extracting…' : 'Upload and extract'}
             </Button>
@@ -194,7 +194,7 @@ export function Data() {
 
       <Panel title="Import history">
         {imports.length === 0 ? (
-          <p className={styles.empty}>No workbooks have been uploaded through the Data workflow.</p>
+          <p className={styles.empty}>No best-practice documents have been uploaded through the Data workflow.</p>
         ) : (
           <div className={styles.tableWrap}>
             <table className={styles.table}>

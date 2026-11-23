@@ -1,23 +1,37 @@
-import { Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import multer from 'multer';
 import * as dataController from '../controllers/dataController';
 
 const router = Router();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 50 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, callback) => {
-    const isXlsx = file.originalname.toLowerCase().endsWith('.xlsx')
-      || file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    if (!isXlsx) {
-      callback(new Error('Only .xlsx workbooks are currently supported'));
+    const extension = file.originalname.toLowerCase().split('.').pop();
+    const supported = ['xlsx', 'csv', 'json', 'txt', 'md', 'markdown', 'pdf', 'docx'].includes(extension ?? '');
+    if (!supported) {
+      callback(new Error('Use XLSX, CSV, JSON, TXT, Markdown, PDF or DOCX'));
       return;
     }
     callback(null, true);
   },
 });
 
-router.post('/best-practice-imports', upload.single('file'), dataController.uploadBestPractices);
+function uploadBestPracticeFile(req: Request, res: Response, next: NextFunction): void {
+  upload.single('file')(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ error: 'File too large. 50 MB maximum upload.' });
+      return;
+    }
+    if (error instanceof Error) {
+      res.status(415).json({ error: error.message });
+      return;
+    }
+    next();
+  });
+}
+
+router.post('/best-practice-imports', uploadBestPracticeFile, dataController.uploadBestPractices);
 router.get('/best-practice-imports', dataController.getImportJobs);
 router.get('/best-practice-imports/:id', dataController.getImportReview);
 router.patch('/best-practice-imports/:id/candidates/:candidateId', dataController.patchImportCandidate);

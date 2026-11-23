@@ -49,8 +49,12 @@ vi.mock('../pageFetcher', () => ({
 
 vi.mock('../aiAssistService', () => ({
   analyzeEcommercePageWithAi: vi.fn(async () => null),
+  analyzeVisualPageWithAi: vi.fn(async () => null),
   classifyPrimaryCtaWithAi: vi.fn(async () => null),
   mapGoalDescriptionWithAi: vi.fn(async () => null),
+  createAiUsageTracker: vi.fn(() => ({ requestCount: 0, inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 })),
+  withAiUsageTracking: vi.fn(async (_tracker, callback) => callback()),
+  summarizeAiUsage: vi.fn((tracker) => ({ model: 'test', ...tracker, estimatedCostUsd: 0 })),
 }));
 
 import { createEvaluation } from '../evaluationService';

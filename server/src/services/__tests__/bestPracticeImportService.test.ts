@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import { describe, expect, it } from 'vitest';
-import { extractWorkbookCandidates } from '../bestPracticeImportService';
+import { extractDocumentCandidates, extractWorkbookCandidates } from '../bestPracticeImportService';
 
 describe('bestPracticeImportService', () => {
   it('extracts Cake-shaped sheets and merges repeated practices into one criterion', async () => {
@@ -39,6 +39,42 @@ describe('bestPracticeImportService', () => {
     const bytes = await workbook.xlsx.writeBuffer();
 
     await expect(extractWorkbookCandidates(Buffer.from(bytes)))
-      .rejects.toThrow('No supported best-practice rows were found');
+      .rejects.toThrow('No recognisable best-practice checks were found');
+  });
+
+  it('extracts a generic spreadsheet without Cake sheet names or fixed columns', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('UX research');
+    sheet.addRow(['Page type', 'Best practice', 'Why', 'Category']);
+    sheet.addRow(['Product page', 'Show delivery timing beside the purchase action', 'Reduces uncertainty', 'Conversion']);
+    const bytes = await workbook.xlsx.writeBuffer();
+
+    const extraction = await extractWorkbookCandidates(Buffer.from(bytes));
+
+    expect(extraction.candidates[0].proposedCriterion).toMatchObject({
+      description: 'Show delivery timing beside the purchase action',
+      rationale: 'Reduces uncertainty',
+      pageAreas: ['Product page'],
+      outcomeMappings: ['INCREASE_CONVERSION'],
+    });
+  });
+
+  it('merges short checklist questions with their expanded versions and removes document prose', async () => {
+    const extraction = await extractDocumentCandidates({
+      fileName: 'audit.txt',
+      buffer: Buffer.from([
+        'Ecommerce optimization guide and introduction text that is not a criterion.',
+        '1. Are delivery dates clearly shown?',
+        '2. Can shoppers edit cart quantities?',
+        '1. Are delivery dates clearly shown?\n\nShowing timing before purchase reduces uncertainty.\n✓ State a specific dispatch estimate.',
+        '2. Can shoppers edit cart quantities?\n\nProvide visible increase, decrease and remove controls.',
+      ].join('\n\n')),
+    });
+
+    expect(extraction).toMatchObject({ rowsFound: 5, uniqueCriteria: 2, duplicateRows: 2, skippedRows: 1 });
+    expect(extraction.candidates[0].proposedCriterion).toMatchObject({
+      title: 'Are delivery dates clearly shown?',
+    });
+    expect(JSON.stringify(extraction.candidates[0].proposedCriterion)).toContain('specific dispatch estimate');
   });
 });

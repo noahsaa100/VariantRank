@@ -7,6 +7,7 @@ import { Page, PageHeader } from '../components/Page';
 import pageStyles from '../components/Page.module.css';
 import { Panel } from '../components/Panel';
 import styles from './VariantDetail.module.css';
+import { humanizeFinding } from '../utils/findings';
 
 function formatFeatureValue(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -79,6 +80,7 @@ export function VariantDetail() {
   const checks = allChecks.filter(
     (check) => check.status !== 'NEEDS_REVIEW' && check.status !== 'NOT_OBSERVED',
   );
+  const displayedChecks = checks.length > 0 ? checks : allChecks;
   const assessedCount = allChecks.filter((check) => ['GOOD', 'CAN_BE_IMPROVED', 'BAD'].includes(check.status)).length;
 
   return (
@@ -100,7 +102,7 @@ export function VariantDetail() {
 
       <Panel title="Top Drivers">
         <ul className={styles.list}>
-          {variant.topDrivers.map((driver) => <li className={styles.listItem} key={driver}>{driver}</li>)}
+          {variant.topDrivers.map((driver) => <li className={styles.listItem} key={driver}>{humanizeFinding(driver)}</li>)}
         </ul>
       </Panel>
 
@@ -108,24 +110,27 @@ export function VariantDetail() {
         <Panel title="Rule Penalties">
           <ul className={styles.list}>
             {variant.rulePenalties.map((penalty) => (
-              <li className={styles.listItem} key={penalty.rule}>{penalty.rule}: <strong>{penalty.penalty}</strong></li>
+              <li className={styles.listItem} key={penalty.rule}>{humanizeFinding(penalty.rule)}: <strong>{penalty.penalty}</strong></li>
             ))}
           </ul>
         </Panel>
       )}
 
-      {checks.length > 0 ? (
+      {allChecks.length > 0 ? (
         <Panel title="Checks & evidence">
           <details className={styles.checkDisclosure}>
           <summary className={styles.disclosureSummary}>{assessedCount} of {allChecks.length} applicable checks assessed — expand evidence</summary>
+          {assessedCount === 0 && (
+            <p className={styles.evidence}>The checklist was attached, but no checks were assessed reliably in this run. These checks were excluded from its score.</p>
+          )}
           <div className={styles.checkSummary}>
             {Object.entries(STATUS_LABELS).map(([status, label]) => {
-              const count = checks.filter((check) => check.status === status).length;
+              const count = displayedChecks.filter((check) => check.status === status).length;
               return count > 0 ? <span key={status}><strong>{count}</strong> {label}</span> : null;
             })}
           </div>
           <ul className={styles.checkList}>
-            {checks.map((result) => <CriterionRow key={result.id} result={result} />)}
+            {displayedChecks.map((result) => <CriterionRow key={result.id} result={result} />)}
           </ul>
           </details>
         </Panel>

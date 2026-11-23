@@ -15,7 +15,7 @@ import {
 
 export async function uploadBestPractices(req: Request, res: Response): Promise<void> {
   if (!req.file) {
-    res.status(400).json({ error: 'An XLSX workbook is required in the file field' });
+    res.status(400).json({ error: 'A best-practice document is required in the file field' });
     return;
   }
 
@@ -30,7 +30,7 @@ export async function uploadBestPractices(req: Request, res: Response): Promise<
   } catch (error) {
     console.error('uploadBestPractices error:', error);
     res.status(422).json({
-      error: error instanceof Error ? error.message : 'Could not parse workbook',
+      error: error instanceof Error ? error.message : 'Could not parse best-practice document',
     });
   }
 }

@@ -14,17 +14,18 @@ describe('aiAssistService Anthropic transport', () => {
     vi.unstubAllGlobals();
   });
 
-  it('uses Anthropic Messages API and preserves the existing parsed result shape', async () => {
+  it('uses forced Anthropic tool output and preserves the existing parsed result shape', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       content: [{
-        type: 'text',
-        text: JSON.stringify({
+        type: 'tool_use',
+        name: 'return_json',
+        input: {
           actionType: 'action',
           commitmentLevel: 'high',
           riskReduction: { present: true, cues: ['guarantee'] },
           confidence: 0.91,
           reasoning: 'Clear purchase action.',
-        }),
+        },
       }],
     }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -53,6 +54,8 @@ describe('aiAssistService Anthropic transport', () => {
       max_tokens: 2048,
       system: expect.any(String),
       messages: [{ role: 'user', content: expect.any(String) }],
+      tools: [{ name: 'return_json', input_schema: { type: 'object' } }],
+      tool_choice: { type: 'tool', name: 'return_json' },
     });
     expect(body.response_format).toBeUndefined();
   });

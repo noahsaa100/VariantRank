@@ -61,6 +61,12 @@ export interface ImportCandidate {
     sourceReferences?: Array<{ sheet?: string; row?: number; metric?: string; outcome?: string }>;
     primaryCategory?: ScoreCategory;
     evaluationMethod?: EvaluationMethod;
+    statusDefinitions?: {
+      good?: string;
+      canBeImproved?: string;
+      bad?: string;
+      notApplicable?: string;
+    };
   };
 }
 

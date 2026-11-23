@@ -1,8 +1,10 @@
 import type { Variant } from '../types';
 import styles from './ComparisonSummary.module.css';
+import { humanizeFinding } from '../utils/findings';
 
 interface ComparisonSummaryProps {
   variants: Variant[];
+  narrative?: string | null;
 }
 
 type EcommerceEvidence = Record<string, string | null>;
@@ -58,6 +60,15 @@ function shortenEvidence(value: string): string {
   return normalized.length <= 105 ? normalized : `${normalized.slice(0, 102).trimEnd()}…`;
 }
 
+function conciseFinding(value: string): string {
+  const readable = humanizeFinding(value).replace(/[“”]/g, '').trim();
+  const firstSentence = readable.split(/(?<=[.!?])\s+/)[0];
+  if (firstSentence.length <= 180) return firstSentence.replace(/[.!?]+$/, '');
+  const words = firstSentence.slice(0, 180).split(' ');
+  words.pop();
+  return words.join(' ').replace(/[,:;.!?]+$/, '');
+}
+
 function evidenceExamples(evidence: EcommerceEvidence, limit: number): string[] {
   return EVIDENCE_PRIORITY
     .map((key) => evidence[key])
@@ -66,8 +77,17 @@ function evidenceExamples(evidence: EcommerceEvidence, limit: number): string[] 
     .map((value) => `“${shortenEvidence(value)}”`);
 }
 
-export function ComparisonSummary({ variants }: ComparisonSummaryProps) {
+export function ComparisonSummary({ variants, narrative }: ComparisonSummaryProps) {
   if (variants.length === 0) return null;
+
+  if (narrative) {
+    return (
+      <section className={styles.summary} aria-labelledby="comparison-summary-title">
+        <h3 id="comparison-summary-title">{variants.length > 1 ? 'Why this ranked higher' : 'Performance summary'}</h3>
+        <p>{narrative}</p>
+      </section>
+    );
+  }
 
   const ranked = [...variants].sort((a, b) => a.rank - b.rank);
   const winner = ranked[0];
@@ -156,6 +176,26 @@ export function ComparisonSummary({ variants }: ComparisonSummaryProps) {
   const runnerEvidenceText = runnerExamples.length > 0
     ? ` Its own strengths included ${formatList(runnerExamples)}.`
     : '';
+  const winnerDriverExamples = winner.topDrivers
+    .filter((driver) => !runnerUp.topDrivers.includes(driver))
+    .slice(0, 3)
+    .map(conciseFinding);
+  const runnerDriverExamples = runnerUp.topDrivers
+    .filter((driver) => !winner.topDrivers.includes(driver))
+    .slice(0, 2)
+    .map(conciseFinding);
+  const leadingPenalty = [...winner.rulePenalties]
+    .filter((penalty) => penalty.penalty < 0)
+    .sort((left, right) => left.penalty - right.penalty)[0];
+  const cakeEvidenceText = winnerDriverExamples.length > 0
+    ? ` The winning store performed particularly well because ${winnerDriverExamples.join('; ').toLowerCase()}.`
+    : '';
+  const runnerCakeEvidenceText = runnerDriverExamples.length > 0
+    ? ` Its strongest points were ${runnerDriverExamples.join('; ').toLowerCase()}.`
+    : '';
+  const opportunityText = leadingPenalty
+    ? ` The winner's clearest remaining opportunity is to address ${conciseFinding(leadingPenalty.rule).toLowerCase()}.`
+    : '';
   const fieldContext = ranked.length > 2
     ? ` Across all ${ranked.length} variants, scores ranged from ${ranked.at(-1)!.totalScore.toFixed(1)} to ${winner.totalScore.toFixed(1)}.`
     : '';
@@ -165,7 +205,8 @@ export function ComparisonSummary({ variants }: ComparisonSummaryProps) {
       <h3 id="comparison-summary-title">Why this ranked higher</h3>
       <p>
         Variant #{winner.rank} ranked first by {margin.toFixed(1)} points. {leadReason}{evidenceReason}.
-        {specificEvidence} Variant #{runnerUp.rank} remained competitive by {competitiveReason}.{runnerEvidenceText}{fieldContext}
+        {specificEvidence}{cakeEvidenceText} Variant #{runnerUp.rank} remained competitive by {competitiveReason}.
+        {runnerEvidenceText}{runnerCakeEvidenceText}{opportunityText}{fieldContext}
       </p>
     </section>
   );

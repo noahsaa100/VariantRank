@@ -42,6 +42,8 @@ export interface Variant {
   topDrivers: string[];
   features: Features;
   criterionResults?: CriterionResult[];
+  siteRootUrl?: string | null;
+  pageType?: string | null;
 }
 
 export interface Evaluation {
@@ -51,6 +53,40 @@ export interface Evaluation {
   urls: string[];
   anonymousSessionId: string | null;
   processingTime: number;
+  scanMode?: 'SINGLE_PAGE' | 'FULL_SITE';
+  siteSummary?: { stores: Array<{
+    rootUrl: string;
+    overallScore: number;
+    categoryScores: Record<string, number>;
+    pagesScanned: number;
+    pageTypes: Record<string, number>;
+  }>;
+  comparisonNarrative?: string | null;
+  storeInsights?: Array<{ url: string; strengths: string[]; improvements: string[] }>;
+  } | null;
+  crawlReport?: {
+    stores: Array<{
+      rootUrl: string;
+      pages: Array<{ url: string; expectedType: string; source: string }>;
+      shopperFlow: {
+      productUrl: string | null;
+      addedToCart: boolean;
+      cartUrl: string | null;
+      checkoutUrl: string | null;
+      stoppedAtCheckoutEntry: boolean;
+      notes: string[];
+      };
+    }>;
+  } | null;
+  aiUsage?: {
+    model: string;
+    requestCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+    estimatedCostUsd: number;
+  } | null;
   variants: Variant[];
 }
 

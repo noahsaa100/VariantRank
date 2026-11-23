@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { createEvaluation } from '../api/evaluations';
 import { getOrCreateSessionId } from '../utils/session';
 import { Button } from '../components/Button';
+import { SquishSwitch } from '../components/SquishSwitch';
 import { Page, PageHeader } from '../components/Page';
 import pageStyles from '../components/Page.module.css';
 import styles from './NewEvaluation.module.css';
@@ -16,6 +17,7 @@ const GOALS = [
 ];
 
 export function NewEvaluation() {
+  const [scanMode, setScanMode] = useState<'SINGLE_PAGE' | 'FULL_SITE'>('SINGLE_PAGE');
   const [urlsText, setUrlsText] = useState('');
   const [goal, setGoal] = useState(GOALS[0]);
   const [goalDescription, setGoalDescription] = useState('');
@@ -46,9 +48,9 @@ export function NewEvaluation() {
           ? 52 + (elapsedSeconds - 35) * 0.7
           : Math.min(95, 80 + (elapsedSeconds - 75) * 0.2);
   const progressLabel = elapsedSeconds < 12
-    ? 'Rendering desktop and mobile pages'
+    ? scanMode === 'FULL_SITE' ? 'Discovering representative store pages' : 'Rendering desktop and mobile pages'
     : elapsedSeconds < 40
-      ? 'Extracting page evidence'
+      ? scanMode === 'FULL_SITE' ? 'Testing the product, cart and checkout journey' : 'Extracting page evidence'
       : elapsedSeconds < 75
         ? 'Evaluating Cake checks'
         : 'Finalising scores and evidence';
@@ -71,10 +73,11 @@ export function NewEvaluation() {
     try {
       const session = getOrCreateSessionId();
       const evaluation = await createEvaluation({
-        urls,
+        urls: scanMode === 'FULL_SITE' ? urls.slice(0, 2) : urls,
         goal,
         goalDescription: goalDescription.trim() || undefined,
         anonymousSessionId: session,
+        scanMode,
       });
       navigate(`/results/${evaluation.id}`);
     } catch {
@@ -93,12 +96,21 @@ export function NewEvaluation() {
       />
       <form className={styles.form} onSubmit={handleSubmit}>
         <div className={styles.field}>
-          <label className={styles.label} htmlFor="urls">URLs (one per line)</label>
+          <div className={styles.fieldHeader}>
+            <label className={styles.label} htmlFor="urls">URLs (one per line)</label>
+            <SquishSwitch
+              checked={scanMode === 'FULL_SITE'}
+              onChange={(checked) => setScanMode(checked ? 'FULL_SITE' : 'SINGLE_PAGE')}
+              offLabel="Single page"
+              onLabel="Full site"
+              disabled={loading}
+            />
+          </div>
           <textarea
             className={styles.control}
             id="urls"
             rows={6}
-            placeholder="https://example.com&#10;https://another.com"
+            placeholder="https://example.com\nhttps://another.com"
             value={urlsText}
             onChange={(e) => setUrlsText(e.target.value)}
           />

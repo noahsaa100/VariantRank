@@ -1,4 +1,6 @@
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContextOptions, type Page } from 'playwright';
+
+export type RenderedStorageState = Exclude<BrowserContextOptions['storageState'], string | undefined>;
 
 export interface RenderedControl {
   tag: string;
@@ -18,6 +20,7 @@ export interface RenderedSignals {
   htmlLang: string | null;
   mainHeading: string | null;
   prices: string[];
+  struckPrices: string[];
   discounts: string[];
   hasProductCta: boolean;
   productCtaText: string | null;
@@ -103,14 +106,14 @@ async function exploreSafeStates(page: Page): Promise<{ texts: string[]; capture
   ].join(','));
   const texts: string[] = [];
   const captures: Array<{ label: string; screenshotBase64: string }> = [];
-  const count = Math.min(await candidates.count(), 24);
+  const count = Math.min(await candidates.count(), 10);
   for (let index = 0; index < count; index += 1) {
     const candidate = candidates.nth(index);
     const text = (await candidate.innerText().catch(() => '')).trim().toLowerCase();
     if (/add to|buy now|checkout|place order|pay now/.test(text)) continue;
     if (!await candidate.isVisible().catch(() => false)) continue;
-    await candidate.click({ timeout: 800 }).catch(() => undefined);
-    await page.waitForTimeout(80);
+    await candidate.click({ timeout: 350 }).catch(() => undefined);
+    await page.waitForTimeout(40);
     const revealedText = await page.locator('body').innerText().catch(() => '');
     if (revealedText) texts.push(revealedText.replace(/\s+/g, ' ').trim().slice(0, 30000));
     if (/faq|shipping|delivery|return|size|subscribe|one-time/.test(text) && captures.length < 4) {
@@ -175,11 +178,16 @@ async function collectViewport(page: Page): Promise<ViewportEvidence> {
     return {
       visibleText: (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 30000),
       controls: controlElements.map((element) => {
-        const rect = element.getBoundingClientRect();
         const input = element as HTMLInputElement;
+        const isChoice = element.matches('input[type="radio"], input[type="checkbox"]');
+        const associatedLabel = isChoice
+          ? (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : element.closest('label'))
+          : null;
+        const touchTarget = associatedLabel && isVisible(associatedLabel) ? associatedLabel : element;
+        const rect = touchTarget.getBoundingClientRect();
         return {
           tag: element.tagName.toLowerCase(),
-          text: (element.textContent || input.value || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+          text: (associatedLabel?.textContent || element.textContent || input.value || '').replace(/\s+/g, ' ').trim().slice(0, 160),
           type: input.type || null,
           ariaLabel: element.getAttribute('aria-label'),
           width: Math.round(rect.width),
@@ -223,6 +231,17 @@ async function collectViewport(page: Page): Promise<ViewportEvidence> {
         const paymentRects = paymentElements.map(({ element }) => element.getBoundingClientRect());
         const footerRect = footer?.getBoundingClientRect();
         const prices = [...new Set(bodyText.match(/(?:£|\$|€)\s?\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?\s?(?:GBP|USD|EUR)/gi) ?? [])].slice(0, 12);
+        const struckPrices = [...new Set([
+          ...document.querySelectorAll('s, del, [class*="compare" i], [class*="old-price" i], [class*="was-price" i], [class*="price" i]'),
+        ].flatMap((element) => {
+          if (!isVisible(element)) return [];
+          const style = getComputedStyle(element);
+          const explicitlyStruck = ['S', 'DEL'].includes(element.tagName)
+            || style.textDecorationLine.includes('line-through')
+            || /compare|old-price|was-price/i.test(element.className?.toString() ?? '');
+          if (!explicitlyStruck) return [];
+          return (element.textContent ?? '').match(/(?:£|\$|€)\s?\d+(?:[.,]\d{1,2})?/g) ?? [];
+        }))].slice(0, 8);
         const discounts = [...new Set(bodyText.match(/(?:save\s*)?\d{1,2}%\s*(?:off)?|(?:save|discount)\s+(?:£|\$|€)?\d+(?:[.,]\d{1,2})?/gi) ?? [])].slice(0, 12);
         const fields = [...document.querySelectorAll('input,select,textarea')];
         const hasLabel = (element: Element) => Boolean(
@@ -235,6 +254,7 @@ async function collectViewport(page: Page): Promise<ViewportEvidence> {
           htmlLang: document.documentElement.getAttribute('lang'),
           mainHeading: document.querySelector('h1')?.textContent?.trim().slice(0, 180) ?? null,
           prices,
+          struckPrices,
           discounts,
           hasProductCta: Boolean(productCta),
           productCtaText: productCta?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 180) ?? null,
@@ -276,6 +296,15 @@ async function collectViewport(page: Page): Promise<ViewportEvidence> {
   const combinedVisibleText = `${evidence.visibleText} ${explored.texts.join(' ')}`.replace(/\s+/g, ' ').trim().slice(0, 60000);
   if (evidence.signals) {
     const lower = combinedVisibleText.toLowerCase();
+    if (!evidence.signals.hasProductCta) {
+      const capturedCta = evidence.controls.find((control) =>
+        control.visible && /add to (?:cart|bag|basket)|buy now|please select options|select options/i.test(control.text),
+      );
+      const textCta = combinedVisibleText.match(/\b(?:add to (?:cart|bag|basket)|buy now|please select options|select options)(?:\s*[–—-]?\s*(?:£|\$|€)\s?\d+(?:[.,]\d{1,2})?)?/i)?.[0];
+      const productCtaText = capturedCta?.text || textCta || null;
+      evidence.signals.hasProductCta = Boolean(productCtaText);
+      evidence.signals.productCtaText = productCtaText?.replace(/\s+/g, ' ').trim().slice(0, 180) ?? null;
+    }
     evidence.signals.hasSizeGuide ||= /size guide|what size|which size|size do i need|sizing|answers? on sizes|choose (?:your )?size/.test(lower);
     evidence.signals.hasFaq ||= /frequently asked|\bfaqs?\b/.test(lower);
     evidence.signals.hasDelivery ||= /delivery|dispatch|shipping|ships? (?:in|within)|next day/.test(lower);
@@ -313,7 +342,7 @@ async function collectViewport(page: Page): Promise<ViewportEvidence> {
   return { ...evidence, visibleText: combinedVisibleText, screenshotBase64: screenshot.toString('base64'), visualCaptures };
 }
 
-async function collectInContext(browser: Browser, url: string, mobile: boolean) {
+async function collectInContext(browser: Browser, url: string, mobile: boolean, storageState?: RenderedStorageState) {
   const context = await browser.newContext({
     viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 1000 },
     deviceScaleFactor: 1,
@@ -322,23 +351,49 @@ async function collectInContext(browser: Browser, url: string, mobile: boolean) 
     userAgent: mobile
       ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1'
       : undefined,
+    storageState,
   });
-  const page = await context.newPage();
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
-  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
-  await page.waitForTimeout(500);
-  const result = await collectViewport(page);
-  const html = mobile ? '' : await page.content();
-  const finalUrl = page.url();
-  await context.close();
-  return { result, html, finalUrl };
+  try {
+    const page = await context.newPage();
+    const hasUsableDocument = async () => page.evaluate(() => {
+      const body = document.body;
+      if (!body) return false;
+      const textLength = (body.innerText || '').trim().length;
+      return textLength >= 80 || body.querySelectorAll('main, header, nav, img, a, button, form').length >= 5;
+    }).catch(() => false);
+
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    } catch (initialError) {
+      // Third-party scripts can leave DOMContentLoaded pending after rendering.
+      if (!(await hasUsableDocument())) {
+        try {
+          await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
+          await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
+        } catch (retryError) {
+          if (!(await hasUsableDocument())) throw retryError instanceof Error ? retryError : initialError;
+        }
+      }
+      if (!(await hasUsableDocument())) throw initialError;
+    }
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+    await page.waitForTimeout(500);
+    const result = await collectViewport(page);
+    const html = mobile ? '' : await page.content();
+    const finalUrl = page.url();
+    return { result, html, finalUrl };
+  } finally {
+    await context.close();
+  }
 }
 
-export async function collectRenderedPage(url: string): Promise<RenderedPageEvidence> {
+export async function collectRenderedPage(url: string, storageState?: RenderedStorageState): Promise<RenderedPageEvidence> {
   const browser = await chromium.launch({ headless: true });
   try {
-    const desktop = await collectInContext(browser, url, false);
-    const mobile = await collectInContext(browser, url, true);
+    const [desktop, mobile] = await Promise.all([
+      collectInContext(browser, url, false, storageState),
+      collectInContext(browser, url, true, storageState),
+    ]);
     return {
       url,
       finalUrl: desktop.finalUrl,

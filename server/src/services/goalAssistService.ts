@@ -79,17 +79,20 @@ export async function resolveGoalWithAssist(goal: string, goalDescription?: stri
     };
   }
 
-  // Resolution order is AI -> keyword rules -> selected goal fallback.
+  // The explicit dropdown selection is authoritative. AI/rules may interpret
+  // the description for transparency, but must never silently change scoring.
   const aiMapped = await mapGoalDescriptionWithAi(normalizedDescription);
   if (aiMapped) {
     return {
-      scoringGoalKey: aiMapped.mappedGoalKey,
+      scoringGoalKey: selectedGoalKey,
       goalAssist: {
         input: normalizedDescription,
-        mappedGoalKey: aiMapped.mappedGoalKey,
+        mappedGoalKey: selectedGoalKey,
         source: 'ai',
         confidence: aiMapped.confidence,
-        reasoning: aiMapped.reasoning,
+        reasoning: aiMapped.mappedGoalKey === selectedGoalKey
+          ? aiMapped.reasoning
+          : `Kept the selected goal; the description appeared closer to ${aiMapped.mappedGoalKey}.`,
       },
     };
   }
@@ -97,8 +100,14 @@ export async function resolveGoalWithAssist(goal: string, goalDescription?: stri
   const ruleMapped = mapGoalDescriptionByRules(normalizedDescription);
   if (ruleMapped) {
     return {
-      scoringGoalKey: ruleMapped.mappedGoalKey,
-      goalAssist: ruleMapped,
+      scoringGoalKey: selectedGoalKey,
+      goalAssist: {
+        ...ruleMapped,
+        mappedGoalKey: selectedGoalKey,
+        reasoning: ruleMapped.mappedGoalKey === selectedGoalKey
+          ? ruleMapped.reasoning
+          : `Kept the selected goal; description keywords appeared closer to ${ruleMapped.mappedGoalKey}.`,
+      },
     };
   }
 

@@ -21,11 +21,12 @@ describe('goalAssistService', () => {
     expect(result.goalAssist.mappedGoalKey).toBe('leadGeneration');
   });
 
-  it('uses rule mapping when AI returns no mapping but keyword rules match', async () => {
+  it('keeps the selected dropdown goal when description keywords suggest another goal', async () => {
     const result = await resolveGoalWithAssist('Lead generation', 'We need users to book consultation calls quickly');
 
-    expect(result.scoringGoalKey).toBe('bookingConsultation');
+    expect(result.scoringGoalKey).toBe('leadGeneration');
     expect(result.goalAssist.source).toBe('rules');
+    expect(result.goalAssist.mappedGoalKey).toBe('leadGeneration');
     expect(result.goalAssist.confidence).toBeGreaterThanOrEqual(0.45);
   });
 });

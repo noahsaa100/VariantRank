@@ -14,7 +14,16 @@ model Evaluation {
   urls               Json
   anonymousSessionId String?
   processingTime     Int
+  scanMode           EvaluationMode @default(SINGLE_PAGE)
+  siteSummary        Json?
+  crawlReport        Json?
+  aiUsage            Json?
   variants           Variant[]
+}
+
+enum EvaluationMode {
+  SINGLE_PAGE
+  FULL_SITE
 }
 
 model Variant {
@@ -27,6 +36,8 @@ model Variant {
   rulePenalties    Json
   topDrivers       Json
   features         Json
+  siteRootUrl      String?
+  pageType         String?
   evaluation       Evaluation                  @relation(fields: [evaluationId], references: [id])
   criterionResults CriterionEvaluationResult[]
 }

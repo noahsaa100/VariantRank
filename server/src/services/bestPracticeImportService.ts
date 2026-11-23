@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import ExcelJS from 'exceljs';
+import { parseBestPracticeDocument } from './bestPracticeDocumentParser';
+import type { NeutralBestPracticeRow } from './bestPracticeDocumentParser';
+import {
+  structureBestPracticeChecklistWithAi,
+  type StructuredBestPracticeDefinition,
+} from './aiAssistService';
 import {
   BusinessOutcomeKey,
   CriterionEvaluationMethod,
@@ -26,6 +31,7 @@ const STANDARD_SHEETS: Record<string, string> = {
 interface SourceRow {
   sheet: string;
   row: number;
+  title?: string;
   outcome: string;
   metric: string;
   pageArea: string;
@@ -38,6 +44,13 @@ interface SourceRow {
   customWorkRequired: boolean | null;
   integrationRequired: boolean | null;
   clientResponsibility: boolean | null;
+  aiDefinition?: StructuredBestPracticeDefinition;
+  statusDefinitions?: {
+    good?: string;
+    canBeImproved?: string;
+    bad?: string;
+    notApplicable?: string;
+  };
 }
 
 export interface ExtractedImportCandidate {
@@ -57,31 +70,6 @@ export interface WorkbookExtraction {
   skippedRows: number;
   sheetsProcessed: string[];
   candidates: ExtractedImportCandidate[];
-}
-
-function cellText(cell: ExcelJS.Cell): string {
-  const value = cell.value;
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value).trim();
-  }
-  if ('text' in value && typeof value.text === 'string') return value.text.trim();
-  if ('richText' in value && Array.isArray(value.richText)) {
-    return value.richText.map((part) => part.text).join('').trim();
-  }
-  if ('result' in value && value.result !== undefined) return String(value.result).trim();
-  return String(cell.text ?? '').trim();
-}
-
-function optionalText(cell: ExcelJS.Cell): string | null {
-  return cellText(cell) || null;
-}
-
-function flagValue(cell: ExcelJS.Cell): boolean | null {
-  const value = cellText(cell).toLowerCase();
-  if (['1', 'true', 'yes', 'y'].includes(value)) return true;
-  if (['0', 'false', 'no', 'n'].includes(value)) return false;
-  return null;
 }
 
 function normalizeCriterion(value: string): string {
@@ -106,90 +94,120 @@ function titleFromDescription(description: string): string {
   return `${shortened.slice(0, lastSpace > 100 ? lastSpace : 137).trim()}...`;
 }
 
-function worksheetImageRows(worksheet: ExcelJS.Worksheet): Set<number> {
-  const rows = new Set<number>();
-  for (const image of worksheet.getImages()) {
-    const range = image.range as unknown as { tl?: { nativeRow?: number }; editAs?: string };
-    const zeroBasedRow = range.tl?.nativeRow;
-    if (typeof zeroBasedRow === 'number') rows.add(zeroBasedRow + 1);
-  }
-  return rows;
+function normalizeOutcome(value: string | null | undefined): string {
+  if (!value) return '';
+  const normalized = normalizeCriterion(value);
+  const match = Object.entries(STANDARD_SHEETS).find(([label]) => normalizeCriterion(label) === normalized);
+  if (match) return match[1];
+  if (/accessib/.test(normalized)) return 'WEB_ACCESSIBILITY';
+  if (/average order|\baov\b/.test(normalized)) return 'INCREASE_AOV';
+  if (/add to cart|\batc\b/.test(normalized)) return 'INCREASE_ATC';
+  if (/product view/.test(normalized)) return 'INCREASE_PRODUCT_VIEWS';
+  if (/conversion|purchase/.test(normalized)) return 'INCREASE_CONVERSION';
+  if (/brand|trust|confidence/.test(normalized)) return 'ENHANCE_BRAND_PERCEPTION';
+  if (/abandon/.test(normalized)) return 'DECREASE_SITE_ABANDONMENT';
+  if (/thank you/.test(normalized)) return 'THANK_YOU_PAGE';
+  return '';
 }
 
-function readStandardSheet(worksheet: ExcelJS.Worksheet, outcome: string): SourceRow[] {
-  const imageRows = worksheetImageRows(worksheet);
-  const rows: SourceRow[] = [];
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const description = cellText(row.getCell(4));
-    if (!description) return;
-    rows.push({
-      sheet: worksheet.name,
-      row: rowNumber,
-      outcome,
-      metric: cellText(row.getCell(2)) || worksheet.name,
-      pageArea: cellText(row.getCell(3)) || 'Unspecified',
-      description,
-      rationale: optionalText(row.getCell(5)),
-      notes: optionalText(row.getCell(6)),
-      exampleUrl: optionalText(row.getCell(8)),
-      hasScreenshot: imageRows.has(rowNumber) || Boolean(cellText(row.getCell(7))),
-      includedInCakeTheme: flagValue(row.getCell(9)),
-      customWorkRequired: flagValue(row.getCell(10)),
-      integrationRequired: flagValue(row.getCell(11)),
-      clientResponsibility: flagValue(row.getCell(12)),
-    });
+function questionHeading(value: string): string | null {
+  const cleaned = value.replace(/--\s*\d+\s+of\s+\d+\s*--/gi, ' ').replace(/\s+/g, ' ').trim();
+  const match = cleaned.match(/^(?:\d+[.)]\s*)?([^?]{12,220}\?)/);
+  return match?.[1].trim() ?? null;
+}
+
+function tokenSimilarity(left: string, right: string): number {
+  const tokens = (value: string) => new Set(normalizeCriterion(value).split(' ').filter((token) => token.length > 2));
+  const a = tokens(left);
+  const b = tokens(right);
+  if (a.size === 0 || b.size === 0) return 0;
+  const shared = [...a].filter((token) => b.has(token)).length;
+  return (2 * shared) / (a.size + b.size);
+}
+
+function prepareChecklistRows(rows: NeutralBestPracticeRow[], format: string) {
+  const headings = rows.map((row) => questionHeading(row.description));
+  const questionRatio = headings.filter(Boolean).length / Math.max(rows.length, 1);
+  if (!['PDF', 'DOCX', 'TXT', 'MD', 'MARKDOWN'].includes(format) || questionRatio < 0.4) {
+    return { rows, skipped: 0, duplicates: 0 };
+  }
+
+  // Checklist documents frequently contain a short contents list followed by
+  // the same numbered checks with detailed rationale. Group by the canonical
+  // question and retain the richest occurrence before spending AI tokens.
+  const grouped: Array<{ question: string; rows: NeutralBestPracticeRow[] }> = [];
+  let skipped = 0;
+  rows.forEach((row, index) => {
+    const question = headings[index];
+    if (!question) { skipped += 1; return; }
+    const existing = grouped.find((group) =>
+      normalizeCriterion(group.question) === normalizeCriterion(question)
+      || tokenSimilarity(group.question, question) >= 0.94);
+    if (existing) existing.rows.push(row);
+    else grouped.push({ question, rows: [row] });
   });
-  return rows;
-}
 
-function readThankYouSheet(worksheet: ExcelJS.Worksheet): SourceRow[] {
-  const rows: SourceRow[] = [];
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const description = cellText(row.getCell(2));
-    if (!description || ['General', "Conversion and AOV 'boosters'"].includes(description)) return;
-    rows.push({
-      sheet: worksheet.name,
-      row: rowNumber,
-      outcome: 'THANK_YOU_PAGE',
-      metric: 'Thank you page',
-      pageArea: 'Thank you page',
-      description,
-      rationale: null,
-      notes: optionalText(row.getCell(5)),
-      exampleUrl: null,
-      hasScreenshot: false,
-      includedInCakeTheme: flagValue(row.getCell(4)),
-      customWorkRequired: null,
-      integrationRequired: null,
-      clientResponsibility: null,
-    });
+  const prepared = grouped.map((group, index) => {
+    const richest = [...group.rows].sort((a, b) => b.description.length - a.description.length)[0];
+    const detail = richest.description.replace(/^(?:\d+[.)]\s*)?[^?]{12,220}\?\s*/, '').trim();
+    return {
+      ...richest,
+      row: index + 1,
+      title: group.question,
+      description: detail ? `${group.question}\n\nSupporting source detail:\n${detail}` : group.question,
+      metadata: {
+        ...(richest.metadata ?? {}),
+        sourceOccurrences: group.rows.map((row) => ({ source: row.source, row: row.row })),
+        duplicateOccurrencesMerged: Math.max(0, group.rows.length - 1),
+      },
+    };
   });
-  return rows;
+  return {
+    rows: prepared,
+    skipped,
+    duplicates: rows.length - skipped - prepared.length,
+  };
 }
 
-export async function extractWorkbookCandidates(buffer: Buffer): Promise<WorkbookExtraction> {
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
-
-  const sourceRows: SourceRow[] = [];
-  const sheetsProcessed: string[] = [];
-  for (const [sheetName, outcome] of Object.entries(STANDARD_SHEETS)) {
-    const worksheet = workbook.getWorksheet(sheetName);
-    if (!worksheet) continue;
-    sheetsProcessed.push(sheetName);
-    sourceRows.push(...readStandardSheet(worksheet, outcome));
-  }
-
-  const thankYouSheet = workbook.worksheets.find((sheet) => sheet.name.includes('Thank you page'));
-  if (thankYouSheet) {
-    sheetsProcessed.push(thankYouSheet.name);
-    sourceRows.push(...readThankYouSheet(thankYouSheet));
-  }
+export async function extractDocumentCandidates(input: {
+  fileName: string;
+  mimeType?: string;
+  buffer: Buffer;
+}): Promise<WorkbookExtraction> {
+  const document = await parseBestPracticeDocument(input);
+  const preparedDocument = prepareChecklistRows(document.rows, document.format);
+  const proseFormat = ['PDF', 'DOCX', 'TXT', 'MD', 'MARKDOWN'].includes(document.format);
+  const structuredDefinitions = proseFormat
+    ? await structureBestPracticeChecklistWithAi(preparedDocument.rows.map((row, sourceIndex) => ({
+      sourceIndex,
+      section: row.source,
+      text: row.description,
+    })))
+    : [];
+  const definitionByIndex = new Map(structuredDefinitions.map((definition) => [definition.sourceIndex, definition]));
+  const sourceRows: SourceRow[] = preparedDocument.rows.map((row, sourceIndex) => ({
+    sheet: row.source,
+    row: row.row,
+    title: row.title,
+    outcome: normalizeOutcome(row.outcome),
+    metric: row.outcome || row.source,
+    pageArea: row.pageArea || 'Unspecified',
+    description: row.description,
+    rationale: row.rationale ?? null,
+    notes: row.guidance ?? null,
+    exampleUrl: row.exampleUrl ?? null,
+    hasScreenshot: false,
+    includedInCakeTheme: null,
+    customWorkRequired: null,
+    integrationRequired: null,
+    clientResponsibility: null,
+    aiDefinition: definitionByIndex.get(sourceIndex),
+    statusDefinitions: row.statusDefinitions,
+  }));
+  const sheetsProcessed = document.sections;
 
   if (sourceRows.length === 0) {
-    throw new Error('No supported best-practice rows were found in the workbook');
+    throw new Error('No recognisable best-practice checks were found. Use a table with a Description, Criterion, Check or Best Practice column, or a document containing clear recommendations.');
   }
 
   const grouped = new Map<string, SourceRow[]>();
@@ -201,8 +219,8 @@ export async function extractWorkbookCandidates(buffer: Buffer): Promise<Workboo
 
   const candidates = [...grouped.values()].map((sources): ExtractedImportCandidate => {
     const first = sources[0];
-    const outcomes = [...new Set(sources.map((source) => source.outcome))];
-    const pageAreas = [...new Set(sources.map((source) => source.pageArea))];
+    const outcomes = [...new Set(sources.map((source) => source.outcome).filter(Boolean))];
+    const pageAreas = [...new Set(sources.map((source) => source.pageArea).filter((area) => area !== 'Unspecified'))];
     const rationales = [...new Set(sources.map((source) => source.rationale).filter(Boolean))];
     const notes = [...new Set(sources.map((source) => source.notes).filter(Boolean))];
     const exampleUrls = [...new Set(sources.map((source) => source.exampleUrl).filter(Boolean))];
@@ -217,11 +235,11 @@ export async function extractWorkbookCandidates(buffer: Buffer): Promise<Workboo
       rawData: { sourceRows: sources } as unknown as Prisma.InputJsonValue,
       proposedCriterion: {
         canonicalKey: key,
-        title: titleFromDescription(first.description),
-        description: first.description,
-        rationale: rationales.join('\n\n') || null,
+        title: first.aiDefinition?.title ?? first.title ?? titleFromDescription(first.description),
+        description: first.aiDefinition?.description ?? first.description,
+        rationale: first.aiDefinition?.rationale ?? (rationales.join('\n\n') || null),
         guidance: notes.join('\n\n') || null,
-        pageAreas,
+        pageAreas: first.aiDefinition?.pageAreas.length ? first.aiDefinition.pageAreas : pageAreas,
         outcomeMappings: outcomes,
         exampleUrls,
         hasScreenshotEvidence: sources.some((source) => source.hasScreenshot),
@@ -232,18 +250,45 @@ export async function extractWorkbookCandidates(buffer: Buffer): Promise<Workboo
           clientResponsibility: sources.some((source) => source.clientResponsibility === true),
         },
         sourceReferences: sources.map(({ sheet, row, metric, outcome }) => ({ sheet, row, metric, outcome })),
+        statusDefinitions: first.aiDefinition ? {
+          good: first.aiDefinition.good,
+          canBeImproved: first.aiDefinition.canBeImproved,
+          bad: first.aiDefinition.bad,
+          notApplicable: first.aiDefinition.notApplicable,
+        } : first.statusDefinitions,
+        primaryCategory: first.aiDefinition?.category,
+        evaluationMethod: first.aiDefinition?.evaluationMethod,
+        applicability: {
+          pageAreas: first.aiDefinition?.pageAreas.length ? first.aiDefinition.pageAreas : pageAreas,
+          scope: (first.aiDefinition?.pageAreas.length || pageAreas.length > 0) ? 'PAGE_SCOPED' : 'SITE_OR_PAGE',
+        },
+        evidenceRequirements: {
+          source: 'IMPORTED_BEST_PRACTICE',
+          evidenceType: first.aiDefinition ? 'AI_STRUCTURED_DEFINITION' : 'INFERRED_ON_PUBLISH',
+          requiresRenderedPage: true,
+          evidenceNeeded: first.aiDefinition?.evidenceNeeded ?? [],
+          evidenceSource: first.aiDefinition?.evidenceSource ?? 'PAGE',
+          evaluableFromWebsite: !['EXTERNAL_BUSINESS_DATA', 'HUMAN_REVIEW'].includes(first.aiDefinition?.evidenceSource ?? 'PAGE'),
+          subchecks: first.aiDefinition?.subchecks ?? [],
+          structuringConfidence: first.aiDefinition?.confidence ?? null,
+        },
       } as Prisma.InputJsonValue,
     };
   });
 
   return {
-    rowsFound: sourceRows.length,
+    rowsFound: document.rows.length,
     uniqueCriteria: candidates.length,
-    duplicateRows: sourceRows.length - candidates.length,
-    skippedRows: 0,
+    duplicateRows: preparedDocument.duplicates + sourceRows.length - candidates.length,
+    skippedRows: preparedDocument.skipped,
     sheetsProcessed,
     candidates,
   };
+}
+
+/** Backwards-compatible helper used by existing tests and integrations. */
+export async function extractWorkbookCandidates(buffer: Buffer): Promise<WorkbookExtraction> {
+  return extractDocumentCandidates({ fileName: 'best-practices.xlsx', buffer });
 }
 
 export async function importBestPracticeWorkbook(input: {
@@ -252,7 +297,7 @@ export async function importBestPracticeWorkbook(input: {
   buffer: Buffer;
   libraryName?: string;
 }) {
-  const slug = (input.libraryName || 'Cake Ecommerce Scorecard')
+  const slug = (input.libraryName || 'VariantRank Best Practices')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
@@ -262,7 +307,7 @@ export async function importBestPracticeWorkbook(input: {
     where: { slug },
     update: {},
     create: {
-      name: input.libraryName || 'Cake Ecommerce Scorecard',
+      name: input.libraryName || 'VariantRank Best Practices',
       slug,
       description: 'Best-practice library staged through the VariantRank Data workflow.',
     },
@@ -279,7 +324,7 @@ export async function importBestPracticeWorkbook(input: {
   });
 
   try {
-    const extraction = await extractWorkbookCandidates(input.buffer);
+    const extraction = await extractDocumentCandidates(input);
     await prisma.$transaction([
       prisma.importCandidate.createMany({
         data: extraction.candidates.map((candidate) => ({
@@ -357,6 +402,14 @@ type ProposedCriterion = {
   sourceReferences?: Array<Record<string, unknown>>;
   primaryCategory?: ScoreCategoryKey;
   evaluationMethod?: CriterionEvaluationMethod;
+  applicability?: Record<string, unknown>;
+  evidenceRequirements?: Record<string, unknown>;
+  statusDefinitions?: {
+    good?: string;
+    canBeImproved?: string;
+    bad?: string;
+    notApplicable?: string;
+  };
 };
 
 function asProposedCriterion(value: Prisma.JsonValue): ProposedCriterion {
@@ -399,10 +452,21 @@ function suggestMethod(proposed: ProposedCriterion): CriterionEvaluationMethod {
 
 function withReviewSuggestions(value: Prisma.JsonValue): ProposedCriterion {
   const proposed = asProposedCriterion(value);
+  const method = proposed.evaluationMethod ?? suggestMethod(proposed);
+  const pageAreas = proposed.pageAreas ?? [];
   return {
     ...proposed,
     primaryCategory: proposed.primaryCategory ?? suggestCategory(proposed),
-    evaluationMethod: proposed.evaluationMethod ?? suggestMethod(proposed),
+    evaluationMethod: method,
+    applicability: proposed.applicability ?? {
+      pageAreas,
+      scope: pageAreas.length > 0 ? 'PAGE_SCOPED' : 'SITE_OR_PAGE',
+    },
+    evidenceRequirements: proposed.evidenceRequirements ?? {
+      source: 'IMPORTED_BEST_PRACTICE',
+      evidenceType: method === CriterionEvaluationMethod.AUTOMATED ? 'DOM_OR_RENDERED_SIGNAL' : 'RENDERED_PAGE_CONTEXT',
+      requiresRenderedPage: true,
+    },
   };
 }
 
@@ -545,6 +609,11 @@ export async function publishImport(importId: string) {
               rationale: proposed.rationale ?? null,
               guidance: proposed.guidance ?? null,
               pageAreas: proposed.pageAreas ?? [],
+              applicability: (proposed.applicability ?? {}) as Prisma.InputJsonValue,
+              evidenceRequirements: {
+                ...(proposed.evidenceRequirements ?? {}),
+                ...(proposed.statusDefinitions ? { statusDefinitions: proposed.statusDefinitions } : {}),
+              } as Prisma.InputJsonValue,
               defaultMethod: proposed.evaluationMethod ?? CriterionEvaluationMethod.HYBRID,
               importanceWeight: 1,
               includedInCakeTheme: implementation.includedInCakeTheme ?? null,
@@ -581,7 +650,7 @@ export async function publishImport(importId: string) {
       include: { _count: { select: { criteria: true } } },
     });
     await tx.libraryVersion.updateMany({
-      where: { libraryId: job.libraryId, id: { not: version.id }, isActive: true },
+      where: { id: { not: version.id }, isActive: true },
       data: { isActive: false },
     });
     await tx.importJob.update({
@@ -615,7 +684,7 @@ export async function activatePublishedImport(importId: string) {
     });
     if (!job?.publishedVersion) return null;
     await tx.libraryVersion.updateMany({
-      where: { libraryId: job.libraryId, isActive: true, id: { not: job.publishedVersion.id } },
+      where: { isActive: true, id: { not: job.publishedVersion.id } },
       data: { isActive: false },
     });
     return tx.libraryVersion.update({
@@ -679,6 +748,12 @@ export async function createImportRevision(importId: string) {
           sourceReferences: Array.isArray(criterion.sourceReferences)
             ? criterion.sourceReferences as Array<Record<string, unknown>>
             : [],
+          applicability: criterion.applicability && typeof criterion.applicability === 'object' && !Array.isArray(criterion.applicability)
+            ? criterion.applicability as Record<string, unknown>
+            : undefined,
+          evidenceRequirements: criterion.evidenceRequirements && typeof criterion.evidenceRequirements === 'object' && !Array.isArray(criterion.evidenceRequirements)
+            ? criterion.evidenceRequirements as Record<string, unknown>
+            : undefined,
           primaryCategory,
           evaluationMethod: criterion.defaultMethod,
         };

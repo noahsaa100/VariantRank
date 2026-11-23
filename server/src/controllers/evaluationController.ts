@@ -3,11 +3,12 @@ import * as evaluationService from '../services/evaluationService';
 
 export async function createEvaluation(req: Request, res: Response): Promise<void> {
   try {
-    const { urls, goal, goalDescription, anonymousSessionId } = req.body as {
+    const { urls, goal, goalDescription, anonymousSessionId, scanMode } = req.body as {
       urls?: unknown;
       goal?: unknown;
       goalDescription?: unknown;
       anonymousSessionId?: string;
+      scanMode?: unknown;
     };
 
     if (!Array.isArray(urls) || urls.length === 0) {
@@ -22,12 +23,21 @@ export async function createEvaluation(req: Request, res: Response): Promise<voi
       res.status(400).json({ error: 'goalDescription must be a string when provided' });
       return;
     }
+    if (scanMode !== undefined && scanMode !== 'SINGLE_PAGE' && scanMode !== 'FULL_SITE') {
+      res.status(400).json({ error: 'scanMode must be SINGLE_PAGE or FULL_SITE' });
+      return;
+    }
+    if (scanMode === 'FULL_SITE' && (urls.length < 1 || urls.length > 2)) {
+      res.status(400).json({ error: 'Full-site comparisons require one or two store URLs' });
+      return;
+    }
 
     const evaluation = await evaluationService.createEvaluation({
       urls: urls as string[],
       goal: goal.trim(),
       goalDescription: goalDescription?.trim() || undefined,
       anonymousSessionId,
+      scanMode: scanMode as 'SINGLE_PAGE' | 'FULL_SITE' | undefined,
     });
 
     res.status(201).json(evaluation);

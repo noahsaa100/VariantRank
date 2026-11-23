@@ -5,6 +5,7 @@ export async function createEvaluation(payload: {
   goal: string;
   goalDescription?: string;
   anonymousSessionId?: string;
+  scanMode?: 'SINGLE_PAGE' | 'FULL_SITE';
 }) {
   const res = await fetch(`${API_BASE}/evaluate`, {
     method: 'POST',
